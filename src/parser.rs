@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 
+use bitflags::bitflags;
 use nom::{
     Err, IResult, Parser,
     branch::alt,
@@ -8,6 +9,8 @@ use nom::{
     multi,
     number::complete::{be_u16, be_u32, be_u64, le_u16, le_u32, le_u64},
 };
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
 
 fn tag1(tag: u8) -> impl Fn(&[u8]) -> IResult<&[u8], u8> {
     move |i: &[u8]| match i.get(0) {
@@ -39,6 +42,57 @@ pub enum ElfClass {
 pub enum ElfEndian {
     EndianLittle,
     EndianBig,
+}
+
+bitflags! {
+    #[derive(Debug)]
+    pub struct SectionFlags: u32 {
+        const SHF_WRITE	           = 1 << 0;	/* Writable */
+        const SHF_ALLOC	           = 1 << 1;	/* Occupies memory during execution */
+        const SHF_EXECINSTR	       = 1 << 2;	/* Executable */
+        const SHF_MERGE	           = 1 << 4;	/* Might be merged */
+        const SHF_STRINGS	       = 1 << 5;	/* Contains nul-terminated strings */
+        const SHF_INFO_LINK	       = 1 << 6;	/* `sh_info' contains SHT index */
+        const SHF_LINK_ORDER	   = 1 << 7;	/* Preserve order after combining */
+        const SHF_OS_NONCONFORMING = 1 << 8;	/* Non-standard OS specific handling */
+    }
+}
+
+#[repr(u32)]
+#[derive(FromPrimitive, Debug)]
+pub enum SectionType {
+    ShtNull = 0,                   /* Section header table entry unused */
+    ShtProgbits = 1,               /* Program data */
+    ShtSymtab = 2,                 /* Symbol table */
+    ShtStrtab = 3,                 /* String table */
+    ShtRela = 4,                   /* Relocation entries with addends */
+    ShtHash = 5,                   /* Symbol hash table */
+    ShtDynamic = 6,                /* Dynamic linking information */
+    ShtNote = 7,                   /* Notes */
+    ShtNobits = 8,                 /* Program space with no data (bss) */
+    ShtRel = 9,                    /* Relocation entries, no addends */
+    ShtShlib = 10,                 /* Reserved */
+    ShtDynsym = 11,                /* Dynamic linker symbol table */
+    ShtInitArray = 14,             /* Array of constructors */
+    ShtFiniArray = 15,             /* Array of destructors */
+    ShtPreinitArray = 16,          /* Array of pre-constructors */
+    ShtGroup = 17,                 /* Section group */
+    ShtSymtabShndx = 18,           /* Extended section indices */
+    ShtRelr = 19,                  /* RELR relative relocations */
+    ShtNum = 20,                   /* Number of defined types.  */
+    ShtLoos = 0x60000000,          /* Start OS-specific.  */
+    LlvmAddrSig = 0x6fff4c03,      /* LLVM Address Signatures */
+    ShtGnuAttributes = 0x6ffffff5, /* Object attributes.  */
+    ShtGnuHash = 0x6ffffff6,       /* GNU-style hash table.  */
+    ShtGnuLiblist = 0x6ffffff7,    /* Prelink library list */
+    ShtChecksum = 0x6ffffff8,      /* Checksum for DSO content.  */
+    ShtSunwMove = 0x6ffffffa,
+    ShtSunwComdat = 0x6ffffffb,
+    ShtSunwSyminfo = 0x6ffffffc,
+    ShtGnuVerdef = 0x6ffffffd,  /* Version definition section.  */
+    ShtGnuVerneed = 0x6ffffffe, /* Version needs section.  */
+    ShtGnuVersym = 0x6fffffff,  /* Version symbol table.  */
+    X8664Unwind = 0x70000001,
 }
 
 #[derive(Debug)]
@@ -74,9 +128,9 @@ pub struct SectionHeader {
     #[expect(dead_code)]
     name: u32,
     #[expect(dead_code)]
-    section_type: u32,
+    typ: SectionType,
     #[expect(dead_code)]
-    flags: u64,
+    flags: SectionFlags,
     #[expect(dead_code)]
     addr: u64,
     #[expect(dead_code)]
@@ -148,7 +202,7 @@ fn section_header(
     move |i: &[u8]| match class {
         ElfClass::Class32 => {
             let (i, name) = parse_u32(i, endianness)?;
-            let (i, section_type) = parse_u32(i, endianness)?;
+            let (i, typ) = parse_u32(i, endianness)?;
             let (i, flags) = parse_u32(i, endianness)?;
             let (i, addr) = parse_u32(i, endianness)?;
             let (i, offset) = parse_u32(i, endianness)?;
@@ -158,25 +212,23 @@ fn section_header(
             let (i, addr_align) = parse_u32(i, endianness)?;
             let (i, entry_size) = parse_u32(i, endianness)?;
 
-            Ok((
-                i,
-                SectionHeader {
-                    name,
-                    section_type,
-                    flags: flags as u64,
-                    addr: addr as u64,
-                    offset: offset as u64,
-                    size: size as u64,
-                    link,
-                    info,
-                    addr_align: addr_align as u64,
-                    entry_size: entry_size as u64,
-                },
-            ))
+            let section_header = SectionHeader {
+                name,
+                typ: SectionType::from_u32(typ).unwrap(),
+                flags: SectionFlags::from_bits_truncate(flags),
+                addr: addr as u64,
+                offset: offset as u64,
+                size: size as u64,
+                link,
+                info,
+                addr_align: addr_align as u64,
+                entry_size: entry_size as u64,
+            };
+            Ok((i, section_header))
         }
         ElfClass::Class64 => {
             let (i, name) = parse_u32(i, endianness)?;
-            let (i, section_type) = parse_u32(i, endianness)?;
+            let (i, typ) = parse_u32(i, endianness)?;
             let (i, flags) = parse_u64(i, endianness)?;
             let (i, addr) = parse_u64(i, endianness)?;
             let (i, offset) = parse_u64(i, endianness)?;
@@ -186,21 +238,19 @@ fn section_header(
             let (i, addr_align) = parse_u64(i, endianness)?;
             let (i, entry_size) = parse_u64(i, endianness)?;
 
-            Ok((
-                i,
-                SectionHeader {
-                    name,
-                    section_type,
-                    flags,
-                    addr,
-                    offset,
-                    size,
-                    link,
-                    info,
-                    addr_align,
-                    entry_size,
-                },
-            ))
+            let section_header = SectionHeader {
+                name,
+                typ: SectionType::from_u32(typ).unwrap(),
+                flags: SectionFlags::from_bits_truncate(flags as u32),
+                addr,
+                offset,
+                size,
+                link,
+                info,
+                addr_align,
+                entry_size,
+            };
+            Ok((i, section_header))
         }
     }
 }

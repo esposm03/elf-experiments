@@ -12,8 +12,5 @@ fn main() {
     for sec in obj.sections {
         println!("- {sec:?}");
     }
-    println!("Segments:");
-    for seg in obj.segments {
-        println!("- {seg:?}");
-    }
+    assert!(obj.segments.is_empty());
 }
