@@ -1,50 +1,21 @@
-use std::num::NonZeroUsize;
-
 use bitflags::bitflags;
-use nom::{
-    Err, IResult, Parser,
-    branch::alt,
-    bytes,
-    error::{Error, ErrorKind},
-    multi,
-    number::complete::{be_u16, be_u32, be_u64, le_u16, le_u32, le_u64},
-};
+use nom::{IResult, Parser, bytes, multi, number::complete as number};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
-fn tag1(tag: u8) -> impl Fn(&[u8]) -> IResult<&[u8], u8> {
-    move |i: &[u8]| match i.get(0) {
-        None => Err(Err::Incomplete(nom::Needed::Size(
-            NonZeroUsize::new(1).unwrap(),
-        ))),
-        Some(x) if *x != tag => Err(Err::Error(Error {
-            input: i,
-            code: ErrorKind::Tag,
-        })),
-        Some(_) => Ok((&i[1..], tag)),
-    }
-}
-
-const ELFCLASS32: u8 = 1;
-const ELFCLASS64: u8 = 2;
-const EV_CURRENT: u32 = 1;
-const EI_NIDENT: usize = 16;
-const ELFDATA2LSB: u8 = 1;
-const ELFDATA2MSB: u8 = 2;
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug, FromPrimitive, PartialEq, Eq)]
 pub enum ElfClass {
-    Class32,
-    Class64,
+    Class32 = 1,
+    Class64 = 2,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug, FromPrimitive, PartialEq, Eq)]
 pub enum ElfEndian {
-    EndianLittle,
-    EndianBig,
+    EndianLittle = 1,
+    EndianBig = 2,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, FromPrimitive, PartialEq, Eq)]
 pub enum ElfType {
     Relocatable = 1, // ET_REL
     Executable = 2,  // ET_EXEC
@@ -176,22 +147,22 @@ pub struct ElfFile {
 
 fn parse_u16<'a>(i: &'a [u8], endianness: ElfEndian) -> IResult<&'a [u8], u16> {
     match endianness {
-        ElfEndian::EndianLittle => le_u16(i),
-        ElfEndian::EndianBig => be_u16(i),
+        ElfEndian::EndianLittle => number::le_u16(i),
+        ElfEndian::EndianBig => number::be_u16(i),
     }
 }
 
 fn parse_u32<'a>(i: &'a [u8], endianness: ElfEndian) -> IResult<&'a [u8], u32> {
     match endianness {
-        ElfEndian::EndianLittle => le_u32(i),
-        ElfEndian::EndianBig => be_u32(i),
+        ElfEndian::EndianLittle => number::le_u32(i),
+        ElfEndian::EndianBig => number::be_u32(i),
     }
 }
 
 fn parse_u64<'a>(i: &'a [u8], endianness: ElfEndian) -> IResult<&'a [u8], u64> {
     match endianness {
-        ElfEndian::EndianLittle => le_u64(i),
-        ElfEndian::EndianBig => be_u64(i),
+        ElfEndian::EndianLittle => number::le_u64(i),
+        ElfEndian::EndianBig => number::be_u64(i),
     }
 }
 
@@ -313,30 +284,19 @@ fn segment_header(
 
 fn elf_header(i: &[u8]) -> IResult<&[u8], ElfHeader> {
     let (i, _) = bytes::tag(&b"\x7fELF"[..]).parse(i)?;
-    let (i, class) = alt((
-        tag1(ELFCLASS32).map(|_| ElfClass::Class32),
-        tag1(ELFCLASS64).map(|_| ElfClass::Class64),
-    ))
-    .parse(i)?;
-    let (i, endianness) = alt((
-        tag1(ELFDATA2LSB).map(|_| ElfEndian::EndianLittle),
-        tag1(ELFDATA2MSB).map(|_| ElfEndian::EndianBig),
-    ))
-    .parse(i)?;
-    let (i, _elfversion) = tag1(EV_CURRENT as u8)(i)?;
-    let (i, os_abi) = nom::number::complete::u8(i)?;
-    let (i, abi_version) = nom::number::complete::u8(i)?;
-    let (i, _) = bytes::take(EI_NIDENT - 9).parse(i)?;
+    let (i, class) = number::u8(i)?;
+    let (i, endianness) = number::u8(i)?;
+    let (i, _elfversion) = number::u8(i)?;
+    let (i, os_abi) = number::u8(i)?;
+    let (i, abi_version) = number::u8(i)?;
+    let (i, _) = bytes::take(7usize).parse(i)?;
+
+    let class = ElfClass::from_u8(class).unwrap();
+    let endianness = ElfEndian::from_u8(endianness).unwrap();
 
     let (i, typ) = parse_u16(i, endianness)?;
     let (i, machine) = parse_u16(i, endianness)?;
-    let (i, version) = parse_u32(i, endianness)?;
-    if version != EV_CURRENT {
-        return Err(Err::Error(Error {
-            input: i,
-            code: ErrorKind::Tag,
-        }));
-    }
+    let (i, _version) = parse_u32(i, endianness)?;
 
     let (i, entry) = match class {
         ElfClass::Class32 => {
