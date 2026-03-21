@@ -44,8 +44,16 @@ pub enum ElfEndian {
     EndianBig,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+pub enum ElfType {
+    Relocatable = 1, // ET_REL
+    Executable = 2,  // ET_EXEC
+    Shared = 3,      // ET_DYN
+    Core = 4,        // ET_CORE
+}
+
 bitflags! {
-    #[derive(Debug)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct SectionFlags: u32 {
         const SHF_WRITE	           = 1 << 0;	/* Writable */
         const SHF_ALLOC	           = 1 << 1;	/* Occupies memory during execution */
@@ -59,7 +67,7 @@ bitflags! {
 }
 
 #[repr(u32)]
-#[derive(FromPrimitive, Debug)]
+#[derive(Clone, Copy, Debug, FromPrimitive, PartialEq, Eq, Hash)]
 pub enum SectionType {
     ShtNull = 0,                   /* Section header table entry unused */
     ShtProgbits = 1,               /* Program data */
@@ -103,8 +111,7 @@ pub struct ElfHeader {
     os_abi: u8,
     #[expect(dead_code)]
     abi_version: u8,
-    #[expect(dead_code)]
-    elf_type: u16,
+    pub typ: ElfType,
     #[expect(dead_code)]
     machine: u16,
     #[expect(dead_code)]
@@ -119,30 +126,23 @@ pub struct ElfHeader {
     phnum: usize,
     shentsize: usize,
     shnum: usize,
-    #[expect(dead_code)]
-    section_name_table_index: u16,
+    pub shstrndx: u16,
 }
 
 #[derive(Debug)]
 pub struct SectionHeader {
-    #[expect(dead_code)]
-    name: u32,
-    #[expect(dead_code)]
-    typ: SectionType,
-    #[expect(dead_code)]
-    flags: SectionFlags,
+    pub name: usize,
+    pub typ: SectionType,
+    pub flags: SectionFlags,
     #[expect(dead_code)]
     addr: u64,
-    #[expect(dead_code)]
-    offset: u64,
-    #[expect(dead_code)]
-    size: u64,
+    pub offset: usize,
+    pub size: usize,
     #[expect(dead_code)]
     link: u32,
     #[expect(dead_code)]
     info: u32,
-    #[expect(dead_code)]
-    addr_align: u64,
+    pub align: u64,
     #[expect(dead_code)]
     entry_size: u64,
 }
@@ -213,15 +213,15 @@ fn section_header(
             let (i, entry_size) = parse_u32(i, endianness)?;
 
             let section_header = SectionHeader {
-                name,
+                name: name as usize,
                 typ: SectionType::from_u32(typ).unwrap(),
                 flags: SectionFlags::from_bits_truncate(flags),
                 addr: addr as u64,
-                offset: offset as u64,
-                size: size as u64,
+                offset: offset as usize,
+                size: size as usize,
                 link,
                 info,
-                addr_align: addr_align as u64,
+                align: addr_align as u64,
                 entry_size: entry_size as u64,
             };
             Ok((i, section_header))
@@ -239,15 +239,15 @@ fn section_header(
             let (i, entry_size) = parse_u64(i, endianness)?;
 
             let section_header = SectionHeader {
-                name,
+                name: name as usize,
                 typ: SectionType::from_u32(typ).unwrap(),
                 flags: SectionFlags::from_bits_truncate(flags as u32),
                 addr,
-                offset,
-                size,
+                offset: offset as usize,
+                size: size as usize,
                 link,
                 info,
-                addr_align,
+                align: addr_align,
                 entry_size,
             };
             Ok((i, section_header))
@@ -328,7 +328,7 @@ fn elf_header(i: &[u8]) -> IResult<&[u8], ElfHeader> {
     let (i, abi_version) = nom::number::complete::u8(i)?;
     let (i, _) = bytes::take(EI_NIDENT - 9).parse(i)?;
 
-    let (i, elf_type) = parse_u16(i, endianness)?;
+    let (i, typ) = parse_u16(i, endianness)?;
     let (i, machine) = parse_u16(i, endianness)?;
     let (i, version) = parse_u32(i, endianness)?;
     if version != EV_CURRENT {
@@ -373,7 +373,7 @@ fn elf_header(i: &[u8]) -> IResult<&[u8], ElfHeader> {
         endianness,
         os_abi,
         abi_version,
-        elf_type,
+        typ: ElfType::from_u16(typ).unwrap(),
         machine,
         entry,
         phoff: phoff as usize,
@@ -384,7 +384,7 @@ fn elf_header(i: &[u8]) -> IResult<&[u8], ElfHeader> {
         phnum: phnum as usize,
         shentsize: shentsize as usize,
         shnum: shnum as usize,
-        section_name_table_index,
+        shstrndx: section_name_table_index,
     };
 
     Ok((i, elf_header))
