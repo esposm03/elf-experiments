@@ -115,22 +115,21 @@ impl Writer {
         }
     }
 
-    #[expect(dead_code)]
     pub fn write_phdr(&self, wr: &mut dyn Write, phdr: &SegmentHeader) {
         match self.class {
             Class32 => {
-                self.write_u32(wr, phdr.segment_type);
+                self.write_u32(wr, phdr.segment_type as u32);
                 self.write_usize(wr, phdr.offset as usize);
                 self.write_usize(wr, phdr.virtual_addr as usize);
                 self.write_usize(wr, phdr.physical_addr as usize);
                 self.write_u32(wr, phdr.file_size as u32);
                 self.write_u32(wr, phdr.mem_size as u32);
-                self.write_u32(wr, phdr.flags);
+                self.write_u32(wr, phdr.flags.bits());
                 self.write_u32(wr, phdr.align as u32);
             }
             Class64 => {
-                self.write_u32(wr, phdr.segment_type);
-                self.write_u32(wr, phdr.flags);
+                self.write_u32(wr, phdr.segment_type as u32);
+                self.write_u32(wr, phdr.flags.bits());
                 self.write_usize(wr, phdr.offset as usize);
                 self.write_usize(wr, phdr.virtual_addr as usize);
                 self.write_usize(wr, phdr.physical_addr as usize);

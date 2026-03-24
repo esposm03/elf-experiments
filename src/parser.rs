@@ -3,7 +3,7 @@ use num_traits::FromPrimitive;
 
 use crate::elf::{
     ElfClass, ElfEndian, ElfFile, ElfHeader, ElfType, SectionFlags, SectionHeader, SectionType,
-    SegmentHeader,
+    SegmentFlags, SegmentHeader, SegmentType,
 };
 
 fn parse_u16<'a>(i: &'a [u8], endianness: ElfEndian) -> IResult<&'a [u8], u16> {
@@ -107,8 +107,8 @@ fn segment_header(
             Ok((
                 i,
                 SegmentHeader {
-                    segment_type,
-                    flags,
+                    segment_type: SegmentType::from_u32(segment_type).unwrap(),
+                    flags: SegmentFlags::from_bits(flags).unwrap(),
                     offset: offset as u64,
                     virtual_addr: virtual_addr as u64,
                     physical_addr: physical_addr as u64,
@@ -131,8 +131,8 @@ fn segment_header(
             Ok((
                 i,
                 SegmentHeader {
-                    segment_type,
-                    flags,
+                    segment_type: SegmentType::from_u32(segment_type).unwrap(),
+                    flags: SegmentFlags::from_bits(flags).unwrap(),
                     offset,
                     virtual_addr,
                     physical_addr,

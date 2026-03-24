@@ -24,9 +24,9 @@ pub enum ElfType {
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct SectionFlags: u32 {
-        const SHF_WRITE	           = 1 << 0;	/* Writable */
-        const SHF_ALLOC	           = 1 << 1;	/* Occupies memory during execution */
-        const SHF_EXECINSTR	       = 1 << 2;	/* Executable */
+        const Write	           = 1 << 0;	/* Writable */
+        const Alloc	           = 1 << 1;	/* Occupies memory during execution */
+        const ExecInstr	       = 1 << 2;	/* Executable */
         const SHF_MERGE	           = 1 << 4;	/* Might be merged */
         const SHF_STRINGS	       = 1 << 5;	/* Contains nul-terminated strings */
         const SHF_INFO_LINK	       = 1 << 6;	/* `sh_info' contains SHT index */
@@ -106,10 +106,40 @@ pub struct SectionHeader {
     pub entry_size: u64,
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, FromPrimitive, PartialEq, Eq, Hash)]
+pub enum SegmentType {
+    Null = 0,                 /* Program header table entry unused */
+    Load = 1,                 /* Loadable program segment */
+    Dynamic = 2,              /* Dynamic linking information */
+    Interp = 3,               /* Program interpreter */
+    Note = 4,                 /* Auxiliary information */
+    Shlib = 5,                /* Reserved */
+    Phdr = 6,                 /* Entry for header table itself */
+    Tls = 7,                  /* Thread-local storage segment */
+    Num = 8,                  /* Number of defined types */
+    GnuEhFrame = 0x6474e550,  /* GCC .eh_frame_hdr segment */
+    GnuStack = 0x6474e551,    /* Indicates stack executability */
+    GnuRelro = 0x6474e552,    /* Read-only after relocation */
+    GnuProperty = 0x6474e553, /* GNU property */
+    GnuSframe = 0x6474e554,   /* SFrame segment.  */
+    SunwBss = 0x6ffffffa,     /* Sun Specific segment */
+    SunWstack = 0x6ffffffb,   /* Stack segment */
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct SegmentFlags: u32 {
+        const Read             = 1 << 2;
+        const Write            = 1 << 1;
+        const Exec             = 1 << 0;
+    }
+}
+
 #[derive(Debug)]
 pub struct SegmentHeader {
-    pub segment_type: u32,
-    pub flags: u32,
+    pub segment_type: SegmentType,
+    pub flags: SegmentFlags,
     pub offset: u64,
     pub virtual_addr: u64,
     pub physical_addr: u64,
