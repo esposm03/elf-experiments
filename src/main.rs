@@ -1,10 +1,4 @@
-use std::{
-    cmp::max,
-    env,
-    ffi::CStr,
-    fs::{self, File},
-    io::{Seek, Write},
-};
+use std::{cmp::max, env, ffi::CStr, fs};
 
 use indexmap::IndexMap;
 
@@ -70,11 +64,11 @@ struct State<'a> {
     progbits_rx: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
     progbits_rwx: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
 
-    out: File,
+    out_path: &'a str,
 }
 
 impl<'a> State<'a> {
-    pub fn new(out_path: &str) -> Self {
+    pub fn new(out_path: &'a str) -> Self {
         Self {
             strtab: Default::default(),
             ident: Default::default(),
@@ -85,7 +79,7 @@ impl<'a> State<'a> {
             progbits_rx: IndexMap::new(),
             progbits_rwx: IndexMap::new(),
 
-            out: File::create(out_path).unwrap(),
+            out_path,
         }
     }
 
@@ -158,7 +152,7 @@ impl<'a> State<'a> {
 
     pub fn emit(&mut self) {
         let ident = self.ident.unwrap();
-        let mut wr = Writer::new(ident.class, ident.endian);
+        let mut wr = Writer::new(self.out_path, ident.class, ident.endian);
 
         let count_ph = |s: &IndexMap<_, _>| {
             if s.is_empty() { 0 } else { 1 }
@@ -179,98 +173,76 @@ impl<'a> State<'a> {
         let mut shdrs = Vec::with_capacity(shnum);
         let mut phdrs = Vec::with_capacity(phnum);
 
-        // Skip over the headers, and emit the strtab and the sections that are not Alloc
-        self.out.seek_relative(initial_skip as i64).unwrap();
-        let strtab_off = self.out.stream_position().unwrap();
-        let strtab_size = self.emit_strtab();
-        self.emit_noalloc_sections(&mut shdrs);
+        // Skip over the headers
+        wr.seek(initial_skip as i64);
 
         // Emit sections with respective padding. Also popuplates program headers and section headers in the meantime
+        self.emit_noalloc_sections(&mut wr, &mut shdrs);
         #[rustfmt::skip]
-        Self::emit_group(&mut self.out, &self.strtab, &self.progbits_rdonly, Pf::Read, &mut shdrs, &mut phdrs);
+        Self::emit_alloc_sections(&mut wr, &self.strtab, &self.progbits_rdonly, Pf::Read, &mut shdrs, &mut phdrs);
         #[rustfmt::skip]
-        Self::emit_group(&mut self.out, &self.strtab, &self.progbits_rw, Pf::Read | Pf::Write, &mut shdrs, &mut phdrs);
+        Self::emit_alloc_sections(&mut wr, &self.strtab, &self.progbits_rw, Pf::Read | Pf::Write, &mut shdrs, &mut phdrs);
         #[rustfmt::skip]
-        Self::emit_group(&mut self.out, &self.strtab, &self.progbits_rx, Pf::Read | Pf::Exec, &mut shdrs, &mut phdrs);
+        Self::emit_alloc_sections(&mut wr, &self.strtab, &self.progbits_rx, Pf::Read | Pf::Exec, &mut shdrs, &mut phdrs);
         #[rustfmt::skip]
-        Self::emit_group(&mut self.out, &self.strtab, &self.progbits_rwx, Pf::Read | Pf::Write | Pf::Exec, &mut shdrs, &mut phdrs);
+        Self::emit_alloc_sections(&mut wr, &self.strtab, &self.progbits_rwx, Pf::Read | Pf::Write | Pf::Exec, &mut shdrs, &mut phdrs);
 
-        // Emit the elf header
-        self.out.rewind().unwrap();
-        wr.write_ehdr(
-            &mut self.out,
-            &ElfHeader {
-                class: ident.class,
-                endianness: ident.endian,
-                os_abi: ident.os_abi,
-                abi_version: ident.abiversion,
-                typ: ElfType::Executable,
-                machine: ident.machine,
-                entry: 0x400000,
-                phoff: wr.elf_header_size(),
-                shoff: wr.elf_header_size() + wr.phentsize() * phnum,
-                flags: 0,
-                header_size: wr.elf_header_size() as u16,
-                phentsize: wr.phentsize() as u16,
-                phnum: phnum as u16,
-                shentsize: wr.shentsize() as u16,
-                shnum: shnum as u16,
-                shstrndx: 1,
-            },
-        );
+        // Go back to the beginning of the file, and emit the headers
+        wr.rewind();
+        let elf_header = ElfHeader {
+            class: ident.class,
+            endianness: ident.endian,
+            os_abi: ident.os_abi,
+            abi_version: ident.abiversion,
+            typ: ElfType::Executable,
+            machine: ident.machine,
+            entry: 0x400000,
+            phoff: wr.elf_header_size(),
+            shoff: wr.elf_header_size() + wr.phentsize() * phnum,
+            flags: 0,
+            header_size: wr.elf_header_size() as u16,
+            phentsize: wr.phentsize() as u16,
+            phnum: phnum as u16,
+            shentsize: wr.shentsize() as u16,
+            shnum: shnum as u16,
+            shstrndx: 1,
+        };
+        wr.write_ehdr(elf_header);
 
         for ph in phdrs {
-            wr.write_phdr(&mut self.out, &ph);
+            wr.write_phdr(ph);
         }
 
-        wr.write_shdr(
-            &mut self.out,
-            &SectionHeader {
-                name: 0,
-                typ: SectionType::ShtNull,
-                flags: SectionFlags::empty(),
-                addr: 0,
-                offset: 0,
-                size: 0,
-                link: 0,
-                info: 0,
-                align: 0,
-                entry_size: 0,
-            },
-        );
-        wr.write_shdr(
-            &mut self.out,
-            &SectionHeader {
-                name: self.strtab.offsetof(c".strtab"),
-                typ: SectionType::ShtStrtab,
-                flags: SectionFlags::empty(),
-                addr: 0,
-                offset: strtab_off as usize,
-                size: strtab_size,
-                link: 0,
-                info: 0,
-                align: 0,
-                entry_size: 0,
-            },
-        );
+        wr.write_null_section();
         for shdr in shdrs {
-            wr.write_shdr(&mut self.out, &shdr);
+            wr.write_shdr(shdr);
         }
     }
 
-    pub fn emit_strtab(&mut self) -> usize {
-        self.out.write_all(self.strtab.bytes()).unwrap();
-        self.strtab.bytes().len()
-    }
+    pub fn emit_noalloc_sections(&mut self, wr: &mut Writer, res: &mut Vec<SectionHeader>) {
+        let strtab_off = wr.tell();
+        let strtab_size = self.strtab.bytes().len();
+        wr.write_bytes(self.strtab.bytes());
+        res.push(SectionHeader {
+            name: self.strtab.offsetof(c".strtab"),
+            typ: SectionType::ShtStrtab,
+            flags: SectionFlags::empty(),
+            addr: 0,
+            offset: strtab_off as usize,
+            size: strtab_size,
+            link: 0,
+            info: 0,
+            align: 0,
+            entry_size: 0,
+        });
 
-    pub fn emit_noalloc_sections(&mut self, res: &mut Vec<SectionHeader>) {
         for (k, v) in &self.progbits_noalloc {
-            res.push(Self::emit_section_data(&mut self.out, &self.strtab, k, v))
+            res.push(Self::emit_section_data(wr, &self.strtab, k, v))
         }
     }
 
-    pub fn emit_group(
-        out: &mut File,
+    pub fn emit_alloc_sections(
+        wr: &mut Writer,
         strtab: &Interner,
         group: &IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
         flags: Pf,
@@ -284,14 +256,14 @@ impl<'a> State<'a> {
         let page_size = 0x1000; // TODO: this should be based on architecture
 
         // Pad to a multiple of page size
-        emit_padding(out, page_size);
+        wr.align(page_size);
 
         // Emit all data, recording offsets
-        let start = out.stream_position().unwrap();
+        let start = wr.tell();
         for (k, v) in group {
-            shdrs.push(State::emit_section_data(out, &strtab, k, v))
+            shdrs.push(State::emit_section_data(wr, &strtab, k, v))
         }
-        let end = out.stream_position().unwrap();
+        let end = wr.tell();
 
         // Create the program header
         assert!(phdrs.is_sorted_by_key(|h| h.virtual_addr));
@@ -312,33 +284,23 @@ impl<'a> State<'a> {
     }
 
     pub fn emit_section_data(
-        out: &mut File,
+        out: &mut Writer,
         strtab: &Interner,
         key: &GroupKey,
         src_sections: &[PlainDataSection<'a>],
     ) -> SectionHeader {
-        let off = out.stream_position().unwrap();
-        let padding = align(off, src_sections[0].align) - off;
-        for _ in 0..padding {
-            out.write_all(b"\xdd").unwrap();
-        }
+        out.align(src_sections[0].align);
+        let start_offset = out.tell();
 
-        let start_offset = out.stream_position().unwrap();
         let mut max_align = 1;
-
         for src in src_sections {
-            let off = out.stream_position().unwrap();
-            let padding = align(off, src_sections[0].align) - off;
             max_align = max(max_align, src.align);
 
-            for _ in 0..padding {
-                out.write_all(b"\xcc").unwrap();
-            }
-
-            out.write_all(src.data).unwrap();
+            out.align(src_sections[0].align);
+            out.write_bytes(src.data);
         }
 
-        let end_offset = out.stream_position().unwrap();
+        let end_offset = out.tell();
 
         SectionHeader {
             name: strtab.offsetof(key.name),
@@ -357,11 +319,4 @@ impl<'a> State<'a> {
 
 fn align(v: u64, align: u64) -> u64 {
     v + (align - 1) & !(align - 1)
-}
-
-fn emit_padding(out: &mut File, alignment: u64) {
-    let off = out.stream_position().unwrap();
-    for _ in 0..(align(off, alignment) - off) {
-        out.write_all(b"\0").unwrap();
-    }
 }
