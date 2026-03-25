@@ -64,6 +64,9 @@ struct State<'a> {
     progbits_rx: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
     progbits_rwx: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
 
+    phdrs: Vec<SegmentHeader>,
+    shdrs: Vec<SectionHeader>,
+
     out_path: &'a str,
 }
 
@@ -78,6 +81,9 @@ impl<'a> State<'a> {
             progbits_rw: IndexMap::new(),
             progbits_rx: IndexMap::new(),
             progbits_rwx: IndexMap::new(),
+
+            phdrs: vec![],
+            shdrs: vec![],
 
             out_path,
         }
@@ -150,7 +156,7 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn emit(&mut self) {
+    pub fn emit(mut self) {
         let ident = self.ident.unwrap();
         let mut wr = Writer::new(self.out_path, ident.class, ident.endian);
 
@@ -170,22 +176,15 @@ impl<'a> State<'a> {
             + 2; // there is also a null section and a strtab
         let initial_skip = wr.elf_header_size() + wr.shentsize() * shnum + wr.phentsize() * phnum;
 
-        let mut shdrs = Vec::with_capacity(shnum);
-        let mut phdrs = Vec::with_capacity(phnum);
-
         // Skip over the headers
         wr.seek(initial_skip as i64);
 
-        // Emit sections with respective padding. Also popuplates program headers and section headers in the meantime
-        self.emit_noalloc_sections(&mut wr, &mut shdrs);
-        #[rustfmt::skip]
-        Self::emit_alloc_sections(&mut wr, &self.strtab, &self.progbits_rdonly, Pf::Read, &mut shdrs, &mut phdrs);
-        #[rustfmt::skip]
-        Self::emit_alloc_sections(&mut wr, &self.strtab, &self.progbits_rw, Pf::Read | Pf::Write, &mut shdrs, &mut phdrs);
-        #[rustfmt::skip]
-        Self::emit_alloc_sections(&mut wr, &self.strtab, &self.progbits_rx, Pf::Read | Pf::Exec, &mut shdrs, &mut phdrs);
-        #[rustfmt::skip]
-        Self::emit_alloc_sections(&mut wr, &self.strtab, &self.progbits_rwx, Pf::Read | Pf::Write | Pf::Exec, &mut shdrs, &mut phdrs);
+        // Emit sections with respective padding. Also popuplates `self.phdrs` and `self.shdrs`
+        self.emit_noalloc_sections(&mut wr);
+        self.emit_alloc_sections(&mut wr, AllocSectionsKind::R);
+        self.emit_alloc_sections(&mut wr, AllocSectionsKind::RW);
+        self.emit_alloc_sections(&mut wr, AllocSectionsKind::RX);
+        self.emit_alloc_sections(&mut wr, AllocSectionsKind::RWX);
 
         // Go back to the beginning of the file, and emit the headers
         wr.rewind();
@@ -209,21 +208,21 @@ impl<'a> State<'a> {
         };
         wr.write_ehdr(elf_header);
 
-        for ph in phdrs {
+        for ph in &self.phdrs {
             wr.write_phdr(ph);
         }
 
         wr.write_null_section();
-        for shdr in shdrs {
+        for shdr in &self.shdrs {
             wr.write_shdr(shdr);
         }
     }
 
-    pub fn emit_noalloc_sections(&mut self, wr: &mut Writer, res: &mut Vec<SectionHeader>) {
+    pub fn emit_noalloc_sections(&mut self, wr: &mut Writer) {
         let strtab_off = wr.tell();
         let strtab_size = self.strtab.bytes().len();
         wr.write_bytes(self.strtab.bytes());
-        res.push(SectionHeader {
+        self.shdrs.push(SectionHeader {
             name: self.strtab.offsetof(c".strtab"),
             typ: SectionType::ShtStrtab,
             flags: SectionFlags::empty(),
@@ -237,18 +236,18 @@ impl<'a> State<'a> {
         });
 
         for (k, v) in &self.progbits_noalloc {
-            res.push(Self::emit_section_data(wr, &self.strtab, k, v))
+            self.shdrs.push(self.emit_section_data(wr, k, v))
         }
     }
 
-    pub fn emit_alloc_sections(
-        wr: &mut Writer,
-        strtab: &Interner,
-        group: &IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
-        flags: Pf,
-        shdrs: &mut Vec<SectionHeader>,
-        phdrs: &mut Vec<SegmentHeader>,
-    ) {
+    pub fn emit_alloc_sections(&mut self, wr: &mut Writer, kind: AllocSectionsKind) {
+        let (group, flags) = match kind {
+            AllocSectionsKind::R => (&self.progbits_rdonly, Pf::Read),
+            AllocSectionsKind::RW => (&self.progbits_rw, Pf::Read | Pf::Write),
+            AllocSectionsKind::RX => (&self.progbits_rx, Pf::Read | Pf::Exec),
+            AllocSectionsKind::RWX => (&self.progbits_rwx, Pf::Read | Pf::Write | Pf::Exec),
+        };
+
         if group.is_empty() {
             return;
         }
@@ -261,17 +260,18 @@ impl<'a> State<'a> {
         // Emit all data, recording offsets
         let start = wr.tell();
         for (k, v) in group {
-            shdrs.push(State::emit_section_data(wr, &strtab, k, v))
+            self.shdrs.push(self.emit_section_data(wr, k, v))
         }
         let end = wr.tell();
 
         // Create the program header
-        assert!(phdrs.is_sorted_by_key(|h| h.virtual_addr));
-        let last_phdr = phdrs
+        assert!(self.phdrs.is_sorted_by_key(|h| h.virtual_addr));
+        let last_phdr = self
+            .phdrs
             .last()
             .map(|h| (h.virtual_addr, h.mem_size))
             .unwrap_or((0x400000, 0));
-        phdrs.push(SegmentHeader {
+        self.phdrs.push(SegmentHeader {
             segment_type: SegmentType::Load,
             flags,
             offset: start,
@@ -284,8 +284,8 @@ impl<'a> State<'a> {
     }
 
     pub fn emit_section_data(
+        &self,
         out: &mut Writer,
-        strtab: &Interner,
         key: &GroupKey,
         src_sections: &[PlainDataSection<'a>],
     ) -> SectionHeader {
@@ -303,7 +303,7 @@ impl<'a> State<'a> {
         let end_offset = out.tell();
 
         SectionHeader {
-            name: strtab.offsetof(key.name),
+            name: self.strtab.offsetof(key.name),
             typ: key.typ,
             flags: key.flags,
             addr: 0,
@@ -319,4 +319,11 @@ impl<'a> State<'a> {
 
 fn align(v: u64, align: u64) -> u64 {
     v + (align - 1) & !(align - 1)
+}
+
+enum AllocSectionsKind {
+    R,
+    RW,
+    RX,
+    RWX,
 }

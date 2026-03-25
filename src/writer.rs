@@ -122,7 +122,7 @@ impl Writer {
         self.write_u16(ehdr.shstrndx); // e_shstrndx
     }
 
-    pub fn write_shdr(&mut self, shdr: SectionHeader) {
+    pub fn write_shdr(&mut self, shdr: &SectionHeader) {
         self.write_u32(shdr.name as u32);
         self.write_u32(shdr.typ as u32);
 
@@ -151,7 +151,7 @@ impl Writer {
     }
 
     pub fn write_null_section(&mut self) {
-        self.write_shdr(SectionHeader {
+        self.write_shdr(&SectionHeader {
             name: 0,
             typ: SectionType::ShtNull,
             flags: SectionFlags::empty(),
@@ -165,7 +165,7 @@ impl Writer {
         });
     }
 
-    pub fn write_phdr(&mut self, phdr: SegmentHeader) {
+    pub fn write_phdr(&mut self, phdr: &SegmentHeader) {
         match self.class {
             Class32 => {
                 self.write_u32(phdr.segment_type as u32);
