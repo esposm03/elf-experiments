@@ -85,6 +85,7 @@ impl Writer {
 
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.wr.write_all(bytes).unwrap();
+        self.head += bytes.len() as u64;
     }
 
     pub fn write_ehdr(&mut self, ehdr: ElfHeader) {
@@ -193,7 +194,7 @@ impl Writer {
     pub fn align(&mut self, align: u64) {
         let aligned = self.head + (align - 1) & !(align - 1);
         for _ in 0..(aligned - self.head) {
-            self.wr.write_all(b"\0").unwrap();
+            self.write_bytes(b"\0");
         }
     }
 
