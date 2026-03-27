@@ -37,7 +37,7 @@ fn main() {
     let dest = files.last().unwrap().0.strip_suffix(".o").unwrap();
     let mut state = State::new(dest);
     for (path, file) in &files {
-        state.group_sections(path, file);
+        state.process_input_file(path, file);
     }
     // for (k, v) in &state.groups {
     //     println!("{k:?} = {:?}", v.len());
@@ -89,7 +89,7 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn group_sections(&mut self, path: &str, file: &'a [u8]) {
+    pub fn process_input_file(&mut self, path: &str, file: &'a [u8]) {
         let obj = parser::elf(&file);
 
         assert_eq!(obj.header.typ, ElfType::Relocatable);
@@ -138,21 +138,6 @@ impl<'a> State<'a> {
                     group.entry(groupkey).or_default().push(data);
                 }
             };
-        }
-    }
-
-    fn verify_ident(&mut self, obj: &elf::ElfFile) {
-        let ident = ElfIdent {
-            class: obj.header.class,
-            endian: obj.header.endianness,
-            os_abi: obj.header.os_abi,
-            abiversion: obj.header.abi_version,
-            machine: obj.header.machine,
-        };
-        if let Some(x) = &self.ident {
-            assert_eq!(*x, ident);
-        } else {
-            self.ident = Some(ident);
         }
     }
 
@@ -218,7 +203,22 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn emit_noalloc_sections(&mut self, wr: &mut Writer) {
+    fn verify_ident(&mut self, obj: &elf::ElfFile) {
+        let ident = ElfIdent {
+            class: obj.header.class,
+            endian: obj.header.endianness,
+            os_abi: obj.header.os_abi,
+            abiversion: obj.header.abi_version,
+            machine: obj.header.machine,
+        };
+        if let Some(x) = &self.ident {
+            assert_eq!(*x, ident);
+        } else {
+            self.ident = Some(ident);
+        }
+    }
+
+    fn emit_noalloc_sections(&mut self, wr: &mut Writer) {
         let strtab_off = wr.tell();
         let strtab_size = self.strtab.bytes().len();
         wr.write_bytes(self.strtab.bytes());
@@ -240,7 +240,7 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn emit_alloc_sections(&mut self, wr: &mut Writer, kind: AllocSectionsKind) {
+    fn emit_alloc_sections(&mut self, wr: &mut Writer, kind: AllocSectionsKind) {
         let (group, flags) = match kind {
             AllocSectionsKind::R => (&self.progbits_rdonly, Pf::Read),
             AllocSectionsKind::RW => (&self.progbits_rw, Pf::Read | Pf::Write),
@@ -283,7 +283,7 @@ impl<'a> State<'a> {
         });
     }
 
-    pub fn emit_section_data(
+    fn emit_section_data(
         &self,
         out: &mut Writer,
         key: &GroupKey,
