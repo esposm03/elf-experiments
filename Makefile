@@ -1,15 +1,17 @@
 .PHONY: all
-
 all: target/a target/b target/static
+
+target/debug/elf-experiments: $(shell find src -type f)
+	cargo build
 
 target/a: target/a.o target/b.o
 	ld.lld $^ -o $@
 
-target/b: target/a.o target/b.o
-	cargo run -- $^
+target/b: target/a.o target/b.o target/debug/elf-experiments
+	target/debug/elf-experiments target/a.o target/b.o
 
-target/static: target/static.o
-	cargo run -- $^
+target/static: target/static.o target/debug/elf-experiments
+	target/debug/elf-experiments target/static.o
 
 target/%.o: elfs/%.c
 	@mkdir -p target/
