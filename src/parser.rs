@@ -225,13 +225,14 @@ pub fn elf(data: &[u8]) -> ElfFile {
     let (_, segments) = multi::many(phnum, segment_header(ehdr.class, ehdr.endianness))
         .parse(&data[ehdr.phoff..])
         .unwrap();
-    let syms = syms(data, &sections, ehdr.class, ehdr.endianness);
+    let (syms, symtab_strtab) = syms(data, &sections, ehdr.class, ehdr.endianness);
 
     ElfFile {
         header: ehdr,
         sections,
         segments,
         syms,
+        symtab_strtab,
     }
 }
 
@@ -281,7 +282,7 @@ fn syms(
     sections: &Vec<SectionHeader>,
     class: ElfClass,
     endianness: ElfEndian,
-) -> Vec<Sym> {
+) -> (Vec<Sym>, usize) {
     #[rustfmt::skip]
     assert!(
         sections.iter().filter(|sec| sec.typ == SectionType::ShtSymtab).count() <= 1,
@@ -294,11 +295,13 @@ fn syms(
 
     if let Some(symtab) = symtab {
         let num = symtab.size / symtab.entry_size as usize;
-        multi::many(num, sym(class, endianness))
+        let entries = multi::many(num, sym(class, endianness))
             .parse(&data[symtab.offset..])
             .unwrap()
-            .1
+            .1;
+
+        (entries, symtab.link as usize)
     } else {
-        vec![]
+        (vec![], 0)
     }
 }

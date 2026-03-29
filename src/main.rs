@@ -5,7 +5,7 @@ use indexmap::IndexMap;
 use crate::{
     elf::{
         ElfClass, ElfEndian, ElfHeader, ElfType, SectionFlags as Shf, SectionFlags, SectionHeader,
-        SectionType, SegmentFlags as Pf, SegmentHeader, SegmentType,
+        SectionType, SegmentFlags as Pf, SegmentHeader, SegmentType, Sym,
     },
     interner::Interner,
     writer::Writer,
@@ -16,16 +16,26 @@ mod interner;
 mod parser;
 mod writer;
 
+struct InputSection<'a> {
+    data: &'a [u8],
+    align: u64,
+    syms: Vec<InputSym<'a>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InputSym<'a> {
+    name: &'a CStr,
+    info: u8,
+    other: u8,
+    value: usize,
+    size: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct GroupKey<'a> {
+struct OutputSection<'a> {
     name: &'a CStr,
     typ: SectionType,
     flags: SectionFlags,
-}
-
-struct PlainDataSection<'a> {
-    data: &'a [u8],
-    align: u64,
 }
 
 fn main() {
@@ -58,14 +68,15 @@ struct State<'a> {
     ident: Option<ElfIdent>,
     strtab: Interner<'a>,
 
-    progbits_noalloc: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
-    progbits_rdonly: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
-    progbits_rw: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
-    progbits_rx: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
-    progbits_rwx: IndexMap<GroupKey<'a>, Vec<PlainDataSection<'a>>>,
+    progbits_noalloc: IndexMap<OutputSection<'a>, Vec<InputSection<'a>>>,
+    progbits_rdonly: IndexMap<OutputSection<'a>, Vec<InputSection<'a>>>,
+    progbits_rw: IndexMap<OutputSection<'a>, Vec<InputSection<'a>>>,
+    progbits_rx: IndexMap<OutputSection<'a>, Vec<InputSection<'a>>>,
+    progbits_rwx: IndexMap<OutputSection<'a>, Vec<InputSection<'a>>>,
 
     phdrs: Vec<SegmentHeader>,
     shdrs: Vec<SectionHeader>,
+    syms: Vec<Sym>,
 
     out_path: &'a str,
 }
@@ -84,6 +95,7 @@ impl<'a> State<'a> {
 
             phdrs: vec![],
             shdrs: vec![],
+            syms: vec![],
 
             out_path,
         }
@@ -102,13 +114,13 @@ impl<'a> State<'a> {
         assert_eq!(shstrtab.typ, SectionType::ShtStrtab);
         let shstrtab = &file[shstrtab.offset..][..shstrtab.size];
 
-        for (i, sec) in obj.sections.iter().enumerate() {
+        for (sndx, sec) in obj.sections.iter().enumerate() {
             let name = self.strtab.insert_bytes(&shstrtab[sec.name..]);
             let typ = sec.typ;
             let flags = sec.flags;
             assert!(
                 sec.align.is_power_of_two() || sec.align == 0,
-                "Invalid alignment for section {i} of object {path:?}: {}",
+                "Invalid alignment for section {sndx} of object {path:?}: {}",
                 sec.align
             );
 
@@ -118,13 +130,17 @@ impl<'a> State<'a> {
                 SectionType::ShtSymtab => {}
                 // Generic treatment. Especially for PROGBITS sections
                 _ => {
-                    let groupkey = GroupKey { name, typ, flags };
-                    let data = PlainDataSection {
+                    // Process symbols of this section
+                    let syms = process_input_symbols(&mut self.strtab, file, &obj, sndx);
+
+                    let out_sect = OutputSection { name, typ, flags };
+                    let data = InputSection {
                         data: &file[sec.offset..][..sec.size],
                         align: sec.align,
+                        syms,
                     };
 
-                    let group = if flags.contains(Shf::Alloc | Shf::Write | Shf::ExecInstr) {
+                    let segment = if flags.contains(Shf::Alloc | Shf::Write | Shf::ExecInstr) {
                         &mut self.progbits_rwx
                     } else if flags.contains(Shf::Alloc | Shf::Write) {
                         &mut self.progbits_rw
@@ -136,9 +152,9 @@ impl<'a> State<'a> {
                         &mut self.progbits_noalloc
                     };
 
-                    group.entry(groupkey).or_default().push(data);
+                    segment.entry(out_sect).or_default().push(data);
                 }
-            };
+            }
         }
     }
 
@@ -159,7 +175,7 @@ impl<'a> State<'a> {
             + self.progbits_rw.len()
             + self.progbits_rdonly.len()
             + self.progbits_noalloc.len()
-            + 2; // there is also a null section and a strtab
+            + 3; // there are also a null section, a strtab, and a symtab
         let initial_skip = wr.elf_header_size() + wr.shentsize() * shnum + wr.phentsize() * phnum;
 
         // Skip over the headers
@@ -171,6 +187,25 @@ impl<'a> State<'a> {
         self.emit_alloc_sections(&mut wr, AllocSectionsKind::RW);
         self.emit_alloc_sections(&mut wr, AllocSectionsKind::RX);
         self.emit_alloc_sections(&mut wr, AllocSectionsKind::RWX);
+
+        // Emit symbol table. This has to be done after emitting sections, so that we know the offsets.
+        let symtab_off = wr.tell();
+        for sym in &self.syms {
+            wr.write_sym(sym);
+        }
+        let symtab_size = wr.tell() - symtab_off;
+        self.shdrs.push(SectionHeader {
+            name: self.strtab.offsetof(c".symtab"),
+            typ: SectionType::ShtSymtab,
+            flags: Shf::empty(),
+            addr: 0,
+            offset: symtab_off as usize,
+            size: symtab_size as usize,
+            link: 1, // The index of the string table
+            info: 0,
+            align: 1,
+            entry_size: wr.symsize() as u64,
+        });
 
         // Go back to the beginning of the file, and emit the headers
         wr.rewind();
@@ -236,8 +271,32 @@ impl<'a> State<'a> {
             entry_size: 0,
         });
 
-        for (k, v) in &self.progbits_noalloc {
-            self.shdrs.push(self.emit_section_data(wr, k, v))
+        for (out_sect, in_sect) in &self.progbits_noalloc {
+            wr.align(in_sect[0].align);
+            let start_offset = wr.tell();
+
+            let mut max_align = 1;
+            for src in in_sect {
+                max_align = max(max_align, src.align);
+
+                wr.align(in_sect[0].align);
+                wr.write_bytes(src.data);
+            }
+
+            let end_offset = wr.tell();
+
+            self.shdrs.push(SectionHeader {
+                name: self.strtab.offsetof(out_sect.name),
+                typ: out_sect.typ,
+                flags: out_sect.flags,
+                addr: 0,
+                offset: start_offset as usize,
+                size: (end_offset - start_offset) as usize,
+                link: 0,
+                info: 0,
+                align: max_align,
+                entry_size: 0,
+            });
         }
     }
 
@@ -261,7 +320,44 @@ impl<'a> State<'a> {
         // Emit all data, recording offsets
         let start = wr.tell();
         for (k, v) in group {
-            self.shdrs.push(self.emit_section_data(wr, k, v))
+            wr.align(v[0].align);
+            let start_offset = wr.tell();
+            let shndx = self.shdrs.len();
+            let addr = 0;
+
+            let mut max_align = 1;
+            for src in v {
+                max_align = max(max_align, src.align);
+
+                wr.align(v[0].align);
+                wr.write_bytes(src.data);
+
+                for sym in &src.syms {
+                    self.syms.push(Sym {
+                        name: self.strtab.offsetof(sym.name) as u32,
+                        shndx: shndx as u16,
+                        value: addr as usize + sym.value,
+                        info: sym.info,
+                        other: sym.other,
+                        size: sym.size,
+                    });
+                }
+            }
+
+            let end_offset = wr.tell();
+
+            self.shdrs.push(SectionHeader {
+                name: self.strtab.offsetof(k.name),
+                typ: k.typ,
+                flags: k.flags,
+                addr,
+                offset: start_offset as usize,
+                size: (end_offset - start_offset) as usize,
+                link: 0,
+                info: 0,
+                align: max_align,
+                entry_size: 0,
+            });
         }
         let end = wr.tell();
 
@@ -283,39 +379,6 @@ impl<'a> State<'a> {
             align: page_size,
         });
     }
-
-    fn emit_section_data(
-        &self,
-        out: &mut Writer,
-        key: &GroupKey,
-        src_sections: &[PlainDataSection<'a>],
-    ) -> SectionHeader {
-        out.align(src_sections[0].align);
-        let start_offset = out.tell();
-
-        let mut max_align = 1;
-        for src in src_sections {
-            max_align = max(max_align, src.align);
-
-            out.align(src_sections[0].align);
-            out.write_bytes(src.data);
-        }
-
-        let end_offset = out.tell();
-
-        SectionHeader {
-            name: self.strtab.offsetof(key.name),
-            typ: key.typ,
-            flags: key.flags,
-            addr: 0,
-            offset: start_offset as usize,
-            size: (end_offset - start_offset) as usize,
-            link: 0,
-            info: 0,
-            align: max_align,
-            entry_size: 0,
-        }
-    }
 }
 
 fn align(v: u64, align: u64) -> u64 {
@@ -327,4 +390,27 @@ enum AllocSectionsKind {
     RW,
     RX,
     RWX,
+}
+
+fn process_input_symbols<'b>(
+    strtab: &mut Interner<'b>,
+    file: &'b [u8],
+    obj: &elf::ElfFile,
+    sndx: usize,
+) -> Vec<InputSym<'b>> {
+    let syms_strtab = &obj.sections[obj.symtab_strtab];
+    let syms_strtab = &file[syms_strtab.offset..][..syms_strtab.size];
+    let syms = obj
+        .syms
+        .iter()
+        .filter(|sym| sym.shndx == sndx as u16)
+        .map(|s| InputSym {
+            name: strtab.insert_bytes(&syms_strtab[s.name as usize..]),
+            info: s.info,
+            other: s.other,
+            value: s.value,
+            size: s.size,
+        })
+        .collect();
+    syms
 }

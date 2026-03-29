@@ -43,44 +43,37 @@ impl Writer {
     }
 
     fn write_u8(&mut self, v: u8) {
-        self.wr.write_all(&[v]).unwrap()
+        self.write_bytes(&[v])
     }
 
     fn write_u16(&mut self, v: u16) {
-        self.wr
-            .write_all(&match self.endian {
-                EndianBig => v.to_be_bytes(),
-                EndianLittle => v.to_le_bytes(),
-            })
-            .unwrap()
+        self.write_bytes(&match self.endian {
+            EndianBig => v.to_be_bytes(),
+            EndianLittle => v.to_le_bytes(),
+        })
     }
 
     fn write_u32(&mut self, v: u32) {
-        self.wr
-            .write_all(&match self.endian {
-                EndianBig => v.to_be_bytes(),
-                EndianLittle => v.to_le_bytes(),
-            })
-            .unwrap()
+        self.write_bytes(&match self.endian {
+            EndianBig => v.to_be_bytes(),
+            EndianLittle => v.to_le_bytes(),
+        })
     }
 
     fn write_u64(&mut self, v: u64) {
-        self.wr
-            .write_all(&match self.endian {
-                EndianBig => v.to_be_bytes(),
-                EndianLittle => v.to_le_bytes(),
-            })
-            .unwrap()
+        self.write_bytes(&match self.endian {
+            EndianBig => v.to_be_bytes(),
+            EndianLittle => v.to_le_bytes(),
+        })
     }
 
     fn write_usize(&mut self, v: usize) {
         match (self.endian, self.class) {
-            (EndianLittle, Class32) => self.wr.write_all(&(v as u32).to_le_bytes()),
-            (EndianLittle, Class64) => self.wr.write_all(&(v as u64).to_le_bytes()),
-            (EndianBig, Class32) => self.wr.write_all(&(v as u32).to_be_bytes()),
-            (EndianBig, Class64) => self.wr.write_all(&(v as u64).to_be_bytes()),
+            (EndianLittle, Class32) => self.write_bytes(&(v as u32).to_le_bytes()),
+            (EndianLittle, Class64) => self.write_bytes(&(v as u64).to_le_bytes()),
+            (EndianBig, Class32) => self.write_bytes(&(v as u32).to_be_bytes()),
+            (EndianBig, Class64) => self.write_bytes(&(v as u64).to_be_bytes()),
         }
-        .unwrap();
     }
 
     pub fn write_bytes(&mut self, bytes: &[u8]) {
@@ -191,8 +184,8 @@ impl Writer {
         }
     }
 
-    #[expect(dead_code)]
     pub fn write_sym(&mut self, sym: &Sym) {
+        let start = self.tell();
         match self.class {
             Class32 => {
                 self.write_u32(sym.name);
@@ -211,6 +204,8 @@ impl Writer {
                 self.write_usize(sym.size);
             }
         }
+        let end = self.tell();
+        println!("Symbol size: {}", end - start);
     }
 
     pub fn align(&mut self, align: u64) {
@@ -238,6 +233,13 @@ impl Writer {
         match self.class {
             Class32 => 32,
             Class64 => 56,
+        }
+    }
+
+    pub fn symsize(&self) -> usize {
+        match self.class {
+            Class32 => 16,
+            Class64 => 24,
         }
     }
 }

@@ -153,11 +153,12 @@ pub struct ElfFile {
     pub header: ElfHeader,
     pub sections: Vec<SectionHeader>,
     pub segments: Vec<SegmentHeader>,
-    #[expect(dead_code)]
     pub syms: Vec<Sym>,
+    /// The index of the strtab to be used for looking up symbol names.
+    pub symtab_strtab: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Sym {
     pub name: u32,
     pub info: u8,
