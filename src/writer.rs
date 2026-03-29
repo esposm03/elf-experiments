@@ -208,11 +208,13 @@ impl Writer {
         println!("Symbol size: {}", end - start);
     }
 
-    pub fn align(&mut self, align: u64) {
+    pub fn align(&mut self, align: u64) -> usize {
         let aligned = self.head + (align - 1) & !(align - 1);
-        for _ in 0..(aligned - self.head) {
+        let padding = aligned - self.head;
+        for _ in 0..padding {
             self.write_bytes(b"\0");
         }
+        padding as usize
     }
 
     pub fn elf_header_size(&mut self) -> usize {

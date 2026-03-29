@@ -49,9 +49,6 @@ fn main() {
     for (path, file) in &files {
         state.process_input_file(path, file);
     }
-    // for (k, v) in &state.groups {
-    //     println!("{k:?} = {:?}", v.len());
-    // }
     state.emit();
 }
 
@@ -77,6 +74,7 @@ struct State<'a> {
     phdrs: Vec<SegmentHeader>,
     shdrs: Vec<SectionHeader>,
     syms: Vec<Sym>,
+    entry: Option<usize>,
 
     out_path: &'a str,
 }
@@ -96,6 +94,7 @@ impl<'a> State<'a> {
             phdrs: vec![],
             shdrs: vec![],
             syms: vec![],
+            entry: None,
 
             out_path,
         }
@@ -216,7 +215,7 @@ impl<'a> State<'a> {
             abi_version: ident.abiversion,
             typ: ElfType::Executable,
             machine: ident.machine,
-            entry: 0x400000,
+            entry: self.entry.expect("No _start symbol was defined"),
             phoff: wr.elf_header_size(),
             shoff: wr.elf_header_size() + wr.phentsize() * phnum,
             flags: 0,
@@ -312,36 +311,50 @@ impl<'a> State<'a> {
             return;
         }
 
+        assert!(self.phdrs.is_sorted_by_key(|h| h.virtual_addr));
+        let (last_phdr_addr, last_phdr_size) = self
+            .phdrs
+            .last()
+            .map(|h| (h.virtual_addr, h.mem_size))
+            .unwrap_or((0x400000, 0));
         let page_size = 0x1000; // TODO: this should be based on architecture
 
         // Pad to a multiple of page size
         wr.align(page_size);
+        let mut addr = last_phdr_addr as usize;
 
         // Emit all data, recording offsets
         let start = wr.tell();
         for (k, v) in group {
-            wr.align(v[0].align);
+            addr += wr.align(v[0].align);
+
             let start_offset = wr.tell();
             let shndx = self.shdrs.len();
-            let addr = 0;
 
             let mut max_align = 1;
             for src in v {
                 max_align = max(max_align, src.align);
 
-                wr.align(v[0].align);
+                addr += wr.align(v[0].align);
+
                 wr.write_bytes(src.data);
 
                 for sym in &src.syms {
                     self.syms.push(Sym {
                         name: self.strtab.offsetof(sym.name) as u32,
                         shndx: shndx as u16,
-                        value: addr as usize + sym.value,
+                        value: addr + sym.value,
                         info: sym.info,
                         other: sym.other,
                         size: sym.size,
                     });
+
+                    if sym.name == c"_start" {
+                        self.entry = Some(addr + sym.value);
+                    }
                 }
+
+                addr += src.data.len();
             }
 
             let end_offset = wr.tell();
@@ -350,7 +363,7 @@ impl<'a> State<'a> {
                 name: self.strtab.offsetof(k.name),
                 typ: k.typ,
                 flags: k.flags,
-                addr,
+                addr: last_phdr_addr,
                 offset: start_offset as usize,
                 size: (end_offset - start_offset) as usize,
                 link: 0,
@@ -362,17 +375,11 @@ impl<'a> State<'a> {
         let end = wr.tell();
 
         // Create the program header
-        assert!(self.phdrs.is_sorted_by_key(|h| h.virtual_addr));
-        let last_phdr = self
-            .phdrs
-            .last()
-            .map(|h| (h.virtual_addr, h.mem_size))
-            .unwrap_or((0x400000, 0));
         self.phdrs.push(SegmentHeader {
             segment_type: SegmentType::Load,
             flags,
             offset: start,
-            virtual_addr: align(last_phdr.0 + last_phdr.1, page_size),
+            virtual_addr: align(last_phdr_addr + last_phdr_size, page_size),
             physical_addr: 0,
             file_size: end - start,
             mem_size: end - start,
