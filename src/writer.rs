@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use crate::elf::ElfClass::{Class32, Class64};
 use crate::elf::ElfEndian::{EndianBig, EndianLittle};
 use crate::elf::{
-    ElfClass, ElfEndian, ElfHeader, SectionFlags, SectionHeader, SectionType, SegmentHeader,
+    ElfClass, ElfEndian, ElfHeader, SectionFlags, SectionHeader, SectionType, SegmentHeader, Sym,
 };
 
 pub struct Writer {
@@ -187,6 +187,28 @@ impl Writer {
                 self.write_u64(phdr.file_size);
                 self.write_u64(phdr.mem_size);
                 self.write_u64(phdr.align);
+            }
+        }
+    }
+
+    #[expect(dead_code)]
+    pub fn write_sym(&mut self, sym: &Sym) {
+        match self.class {
+            Class32 => {
+                self.write_u32(sym.name);
+                self.write_usize(sym.value);
+                self.write_usize(sym.size);
+                self.write_u8(sym.info);
+                self.write_u8(sym.other);
+                self.write_u16(sym.shndx);
+            }
+            Class64 => {
+                self.write_u32(sym.name);
+                self.write_u8(sym.info);
+                self.write_u8(sym.other);
+                self.write_u16(sym.shndx);
+                self.write_usize(sym.value);
+                self.write_usize(sym.size);
             }
         }
     }

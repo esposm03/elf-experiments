@@ -153,4 +153,16 @@ pub struct ElfFile {
     pub header: ElfHeader,
     pub sections: Vec<SectionHeader>,
     pub segments: Vec<SegmentHeader>,
+    #[expect(dead_code)]
+    pub syms: Vec<Sym>,
+}
+
+#[derive(Debug)]
+pub struct Sym {
+    pub name: u32,
+    pub info: u8,
+    pub other: u8,
+    pub shndx: u16,
+    pub value: usize,
+    pub size: usize,
 }

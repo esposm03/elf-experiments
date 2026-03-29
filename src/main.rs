@@ -115,6 +115,7 @@ impl<'a> State<'a> {
             match typ {
                 SectionType::ShtNull => {}
                 SectionType::ShtStrtab => {}
+                SectionType::ShtSymtab => {}
                 // Generic treatment. Especially for PROGBITS sections
                 _ => {
                     let groupkey = GroupKey { name, typ, flags };

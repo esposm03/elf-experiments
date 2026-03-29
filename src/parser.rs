@@ -3,7 +3,7 @@ use num_traits::FromPrimitive;
 
 use crate::elf::{
     ElfClass, ElfEndian, ElfFile, ElfHeader, ElfType, SectionFlags, SectionHeader, SectionType,
-    SegmentFlags, SegmentHeader, SegmentType,
+    SegmentFlags, SegmentHeader, SegmentType, Sym,
 };
 
 fn parse_u16<'a>(i: &'a [u8], endianness: ElfEndian) -> IResult<&'a [u8], u16> {
@@ -217,24 +217,88 @@ pub fn elf(data: &[u8]) -> ElfFile {
     let ehdr = elf_header(&data).unwrap().1;
 
     let phnum = ehdr.phnum as usize;
-    let phentsize = ehdr.phentsize as usize;
     let shnum = ehdr.shnum as usize;
-    let shentsize = ehdr.shentsize as usize;
 
-    let sections: Vec<SectionHeader> =
-        multi::many(shnum, section_header(ehdr.class, ehdr.endianness))
-            .parse(&data[ehdr.shoff..ehdr.shoff + (shnum * shentsize)])
-            .unwrap()
-            .1;
-    let segments: Vec<SegmentHeader> =
-        multi::many(phnum, segment_header(ehdr.class, ehdr.endianness))
-            .parse(&data[ehdr.phoff..ehdr.phoff + (phnum * phentsize)])
-            .unwrap()
-            .1;
+    let (_, sections) = multi::many(shnum, section_header(ehdr.class, ehdr.endianness))
+        .parse(&data[ehdr.shoff..])
+        .unwrap();
+    let (_, segments) = multi::many(phnum, segment_header(ehdr.class, ehdr.endianness))
+        .parse(&data[ehdr.phoff..])
+        .unwrap();
+    let syms = syms(data, &sections, ehdr.class, ehdr.endianness);
 
     ElfFile {
         header: ehdr,
         sections,
         segments,
+        syms,
+    }
+}
+
+fn sym(class: ElfClass, endianness: ElfEndian) -> impl Fn(&[u8]) -> IResult<&[u8], Sym> {
+    move |i| match class {
+        ElfClass::Class32 => {
+            let (i, name) = parse_u32(i, endianness)?;
+            let (i, value) = parse_u32(i, endianness)?;
+            let (i, size) = parse_u32(i, endianness)?;
+            let (i, info) = number::u8(i)?;
+            let (i, other) = number::u8(i)?;
+            let (i, shndx) = parse_u16(i, endianness)?;
+
+            let sym = Sym {
+                name,
+                info,
+                other,
+                shndx,
+                value: value as usize,
+                size: size as usize,
+            };
+            Ok((i, sym))
+        }
+        ElfClass::Class64 => {
+            let (i, name) = parse_u32(i, endianness)?;
+            let (i, info) = number::u8(i)?;
+            let (i, other) = number::u8(i)?;
+            let (i, shndx) = parse_u16(i, endianness)?;
+            let (i, value) = parse_u64(i, endianness)?;
+            let (i, size) = parse_u64(i, endianness)?;
+
+            let sym = Sym {
+                name,
+                info,
+                other,
+                shndx,
+                value: value as usize,
+                size: size as usize,
+            };
+            Ok((i, sym))
+        }
+    }
+}
+
+fn syms(
+    data: &[u8],
+    sections: &Vec<SectionHeader>,
+    class: ElfClass,
+    endianness: ElfEndian,
+) -> Vec<Sym> {
+    #[rustfmt::skip]
+    assert!(
+        sections.iter().filter(|sec| sec.typ == SectionType::ShtSymtab).count() <= 1,
+        "Elf file contains more than one SHT_SYMTAB section"
+    );
+
+    let symtab = sections
+        .iter()
+        .find(|sec| sec.typ == SectionType::ShtSymtab);
+
+    if let Some(symtab) = symtab {
+        let num = symtab.size / symtab.entry_size as usize;
+        multi::many(num, sym(class, endianness))
+            .parse(&data[symtab.offset..])
+            .unwrap()
+            .1
+    } else {
+        vec![]
     }
 }
