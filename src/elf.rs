@@ -158,10 +158,31 @@ pub struct ElfFile {
     pub symtab_strtab: usize,
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+pub enum SymBind {
+    Local = 0,
+    Global = 1,
+    Weak = 2,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, FromPrimitive)]
+pub enum SymType {
+    NoType = 0,
+    Object = 1,
+    Func = 2,
+    Section = 3,
+    File = 4,
+    Common = 5,
+    Tls = 6,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Sym {
     pub name: u32,
-    pub info: u8,
+    pub bind: SymBind,
+    pub typ: SymType,
     pub other: u8,
     pub shndx: u16,
     pub value: usize,

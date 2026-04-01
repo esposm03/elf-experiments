@@ -191,13 +191,13 @@ impl Writer {
                 self.write_u32(sym.name);
                 self.write_usize(sym.value);
                 self.write_usize(sym.size);
-                self.write_u8(sym.info);
+                self.write_u8(((sym.bind as u8) << 4) + ((sym.typ as u8) & 0xf));
                 self.write_u8(sym.other);
                 self.write_u16(sym.shndx);
             }
             Class64 => {
                 self.write_u32(sym.name);
-                self.write_u8(sym.info);
+                self.write_u8(((sym.bind as u8) << 4) + ((sym.typ as u8) & 0xf));
                 self.write_u8(sym.other);
                 self.write_u16(sym.shndx);
                 self.write_usize(sym.value);

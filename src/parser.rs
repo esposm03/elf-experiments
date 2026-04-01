@@ -3,7 +3,7 @@ use num_traits::FromPrimitive;
 
 use crate::elf::{
     ElfClass, ElfEndian, ElfFile, ElfHeader, ElfType, SectionFlags, SectionHeader, SectionType,
-    SegmentFlags, SegmentHeader, SegmentType, Sym,
+    SegmentFlags, SegmentHeader, SegmentType, Sym, SymBind, SymType,
 };
 
 fn parse_u16<'a>(i: &'a [u8], endianness: ElfEndian) -> IResult<&'a [u8], u16> {
@@ -248,9 +248,10 @@ fn sym(class: ElfClass, endianness: ElfEndian) -> impl Fn(&[u8]) -> IResult<&[u8
 
             let sym = Sym {
                 name,
-                info,
                 other,
                 shndx,
+                bind: SymBind::from_u8(info >> 4).unwrap(),
+                typ: SymType::from_u8(info & 0b1111).unwrap(),
                 value: value as usize,
                 size: size as usize,
             };
@@ -266,9 +267,10 @@ fn sym(class: ElfClass, endianness: ElfEndian) -> impl Fn(&[u8]) -> IResult<&[u8
 
             let sym = Sym {
                 name,
-                info,
                 other,
                 shndx,
+                bind: SymBind::from_u8(info >> 4).unwrap(),
+                typ: SymType::from_u8(info & 0b1111).unwrap(),
                 value: value as usize,
                 size: size as usize,
             };

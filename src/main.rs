@@ -5,7 +5,7 @@ use indexmap::IndexMap;
 use crate::{
     elf::{
         ElfClass, ElfEndian, ElfHeader, ElfType, SectionFlags as Shf, SectionFlags, SectionHeader,
-        SectionType, SegmentFlags as Pf, SegmentHeader, SegmentType, Sym,
+        SectionType, SegmentFlags as Pf, SegmentHeader, SegmentType, Sym, SymBind, SymType,
     },
     interner::Interner,
     writer::Writer,
@@ -25,7 +25,8 @@ struct InputSection<'a> {
 #[derive(Clone, Copy, Debug)]
 struct InputSym<'a> {
     name: &'a CStr,
-    info: u8,
+    bind: SymBind,
+    typ: SymType,
     other: u8,
     value: usize,
     size: usize,
@@ -344,7 +345,8 @@ impl<'a> State<'a> {
                         name: self.strtab.offsetof(sym.name) as u32,
                         shndx: shndx as u16,
                         value: addr + sym.value,
-                        info: sym.info,
+                        bind: sym.bind,
+                        typ: sym.typ,
                         other: sym.other,
                         size: sym.size,
                     });
@@ -411,9 +413,11 @@ fn process_input_symbols<'b>(
         .syms
         .iter()
         .filter(|sym| sym.shndx == sndx as u16)
+        // .filter(|sym| sym.bind != SymBind::Local)
         .map(|s| InputSym {
             name: strtab.insert_bytes(&syms_strtab[s.name as usize..]),
-            info: s.info,
+            bind: s.bind,
+            typ: s.typ,
             other: s.other,
             value: s.value,
             size: s.size,
