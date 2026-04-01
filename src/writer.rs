@@ -185,7 +185,6 @@ impl Writer {
     }
 
     pub fn write_sym(&mut self, sym: &Sym) {
-        let start = self.tell();
         match self.class {
             Class32 => {
                 self.write_u32(sym.name);
@@ -204,8 +203,6 @@ impl Writer {
                 self.write_usize(sym.size);
             }
         }
-        let end = self.tell();
-        println!("Symbol size: {}", end - start);
     }
 
     pub fn align(&mut self, align: u64) -> usize {

@@ -315,7 +315,6 @@ impl<'a> State<'a> {
             AllocSectionsKind::RX => (&self.progbits_rx, Pf::Read | Pf::Exec),
             AllocSectionsKind::RWX => (&self.progbits_rwx, Pf::Read | Pf::Write | Pf::Exec),
         };
-
         if group.is_empty() {
             return;
         }
@@ -330,12 +329,14 @@ impl<'a> State<'a> {
 
         // Pad to a multiple of page size
         wr.align(page_size);
-        let mut addr = last_phdr_addr as usize;
+        let segment_start = align(last_phdr_addr + last_phdr_size, page_size);
+        let mut addr = segment_start as usize;
 
         // Emit all data, recording offsets
         let start = wr.tell();
         for (k, v) in group {
             addr += wr.align(v[0].align);
+            let section_start = addr as u64;
 
             let start_offset = wr.tell();
             let shndx = self.shdrs.len();
@@ -373,7 +374,7 @@ impl<'a> State<'a> {
                 name: self.strtab.offsetof(k.name),
                 typ: k.typ,
                 flags: k.flags,
-                addr: last_phdr_addr,
+                addr: section_start,
                 offset: start_offset as usize,
                 size: (end_offset - start_offset) as usize,
                 link: 0,
@@ -389,7 +390,7 @@ impl<'a> State<'a> {
             segment_type: SegmentType::Load,
             flags,
             offset: start,
-            virtual_addr: align(last_phdr_addr + last_phdr_size, page_size),
+            virtual_addr: segment_start,
             physical_addr: 0,
             file_size: end - start,
             mem_size: end - start,
@@ -402,6 +403,7 @@ fn align(v: u64, align: u64) -> u64 {
     v + (align - 1) & !(align - 1)
 }
 
+#[derive(Debug)]
 enum AllocSectionsKind {
     R,
     RW,
