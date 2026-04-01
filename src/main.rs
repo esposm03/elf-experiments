@@ -94,7 +94,15 @@ impl<'a> State<'a> {
 
             phdrs: vec![],
             shdrs: vec![],
-            syms: vec![],
+            syms: vec![Sym {
+                name: 0,
+                bind: SymBind::Local,
+                typ: SymType::NoType,
+                other: 0,
+                shndx: 0,
+                value: 0,
+                size: 0,
+            }],
             entry: None,
 
             out_path,
