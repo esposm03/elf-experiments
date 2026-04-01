@@ -1,4 +1,11 @@
-use std::{cmp::max, env, ffi::CStr, fs};
+use std::{
+    cmp::max,
+    env,
+    ffi::CStr,
+    fs::{self, File, Permissions},
+    io::Write,
+    os::unix::fs::PermissionsExt,
+};
 
 use indexmap::IndexMap;
 
@@ -45,12 +52,15 @@ fn main() {
         .map(|p| (p.clone(), fs::read(p).unwrap()))
         .collect();
 
-    let dest = files.last().unwrap().0.strip_suffix(".o").unwrap();
-    let mut state = State::new(dest);
+    let mut state = State::new();
     for (path, file) in &files {
         state.process_input_file(path, file);
     }
-    state.emit();
+
+    let dest = files.last().unwrap().0.strip_suffix(".o").unwrap();
+    let mut file = File::create(dest).unwrap();
+    file.set_permissions(Permissions::from_mode(0o755)).unwrap();
+    file.write_all(&state.emit()).unwrap();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,12 +86,10 @@ struct State<'a> {
     shdrs: Vec<SectionHeader>,
     syms: Vec<Sym>,
     entry: Option<usize>,
-
-    out_path: &'a str,
 }
 
 impl<'a> State<'a> {
-    pub fn new(out_path: &'a str) -> Self {
+    pub fn new() -> Self {
         Self {
             strtab: Default::default(),
             ident: Default::default(),
@@ -104,8 +112,6 @@ impl<'a> State<'a> {
                 size: 0,
             }],
             entry: None,
-
-            out_path,
         }
     }
 
@@ -166,9 +172,9 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn emit(mut self) {
+    pub fn emit(mut self) -> Vec<u8> {
         let ident = self.ident.unwrap();
-        let mut wr = Writer::new(self.out_path, ident.class, ident.endian);
+        let mut wr = Writer::new(ident.class, ident.endian);
 
         let count_ph = |s: &IndexMap<_, _>| {
             if s.is_empty() { 0 } else { 1 }
@@ -245,6 +251,8 @@ impl<'a> State<'a> {
         for shdr in &self.shdrs {
             wr.write_shdr(shdr);
         }
+
+        wr.into_inner()
     }
 
     fn verify_ident(&mut self, obj: &elf::ElfFile) {

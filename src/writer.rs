@@ -1,6 +1,4 @@
-use std::fs::{File, Permissions};
-use std::io::{BufWriter, Seek, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Cursor, Seek, Write};
 
 use crate::elf::ElfClass::{Class32, Class64};
 use crate::elf::ElfEndian::{EndianBig, EndianLittle};
@@ -12,34 +10,32 @@ pub struct Writer {
     class: ElfClass,
     endian: ElfEndian,
 
-    wr: BufWriter<File>,
-    head: u64,
+    wr: Cursor<Vec<u8>>,
 }
 
 impl Writer {
-    pub fn new(path: &str, class: ElfClass, endian: ElfEndian) -> Self {
-        let file = File::create(path).unwrap();
-        file.set_permissions(Permissions::from_mode(0o755)).unwrap();
+    pub fn new(class: ElfClass, endian: ElfEndian) -> Self {
         Self {
             class,
             endian,
-            wr: BufWriter::new(file),
-            head: 0,
+            wr: Cursor::default(),
         }
     }
 
     pub fn seek(&mut self, off: i64) {
         self.wr.seek_relative(off).unwrap();
-        self.head = self.head.saturating_add_signed(off);
     }
 
     pub fn tell(&self) -> u64 {
-        self.head
+        self.wr.position()
     }
 
     pub fn rewind(&mut self) {
-        self.wr.rewind().unwrap();
-        self.head = 0;
+        self.wr.set_position(0);
+    }
+
+    pub fn into_inner(self) -> Vec<u8> {
+        self.wr.into_inner()
     }
 
     fn write_u8(&mut self, v: u8) {
@@ -78,7 +74,6 @@ impl Writer {
 
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.wr.write_all(bytes).unwrap();
-        self.head += bytes.len() as u64;
     }
 
     pub fn write_ehdr(&mut self, ehdr: ElfHeader) {
@@ -206,8 +201,8 @@ impl Writer {
     }
 
     pub fn align(&mut self, align: u64) -> usize {
-        let aligned = self.head + (align - 1) & !(align - 1);
-        let padding = aligned - self.head;
+        let aligned = self.tell() + (align - 1) & !(align - 1);
+        let padding = aligned - self.tell();
         for _ in 0..padding {
             self.write_bytes(b"\0");
         }
