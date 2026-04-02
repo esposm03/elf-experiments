@@ -213,7 +213,7 @@ fn elf_header(i: &[u8]) -> IResult<&[u8], ElfHeader> {
     Ok((i, elf_header))
 }
 
-pub fn elf(data: &[u8]) -> ElfFile {
+pub fn elf<'a>(data: &'a [u8]) -> ElfFile<'a> {
     let ehdr = elf_header(&data).unwrap().1;
 
     let phnum = ehdr.phnum as usize;
@@ -233,6 +233,8 @@ pub fn elf(data: &[u8]) -> ElfFile {
         segments,
         syms,
         symtab_strtab,
+
+        data,
     }
 }
 

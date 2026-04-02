@@ -92,7 +92,7 @@ pub struct ElfHeader {
     pub shstrndx: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SectionHeader {
     pub name: usize,
     pub typ: SectionType,
@@ -149,13 +149,15 @@ pub struct SegmentHeader {
 }
 
 #[derive(Debug)]
-pub struct ElfFile {
+pub struct ElfFile<'a> {
     pub header: ElfHeader,
     pub sections: Vec<SectionHeader>,
     pub segments: Vec<SegmentHeader>,
     pub syms: Vec<Sym>,
     /// The index of the strtab to be used for looking up symbol names.
     pub symtab_strtab: usize,
+
+    pub data: &'a [u8],
 }
 
 #[repr(u8)]

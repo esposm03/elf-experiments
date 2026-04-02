@@ -35,4 +35,8 @@ impl<'a> Interner<'a> {
     pub fn offsetof(&self, s: &'a CStr) -> usize {
         self.strings[s]
     }
+
+    pub fn get(&'a self, off: usize) -> &'a CStr {
+        CStr::from_bytes_until_nul(&self.buf[off..]).unwrap()
+    }
 }

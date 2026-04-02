@@ -11,10 +11,10 @@ use crate::{
     writer::Writer,
 };
 
-mod elf;
-mod interner;
-mod parser;
-mod writer;
+pub mod elf;
+pub mod interner;
+pub mod parser;
+pub mod writer;
 
 struct InputSection<'a> {
     data: &'a [u8],
@@ -91,6 +91,10 @@ impl<'a> State<'a> {
         }
     }
 
+    pub fn override_entry(&mut self, entry: usize) {
+        self.entry = Some(entry);
+    }
+
     pub fn process_input_file(&mut self, path: &str, file: &'a [u8]) {
         let obj = parser::elf(&file);
 
@@ -160,12 +164,12 @@ impl<'a> State<'a> {
             + count_ph(&self.progbits_rw)
             + count_ph(&self.progbits_rx)
             + count_ph(&self.progbits_rdonly);
-        let shnum = self.progbits_rwx.len()
+        let mut shnum = self.progbits_rwx.len()
             + self.progbits_rx.len()
             + self.progbits_rw.len()
             + self.progbits_rdonly.len()
             + self.progbits_noalloc.len()
-            + 3; // there are also a null section, a strtab, and a symtab
+            + 2; // there are also a null section and a strtab
         let initial_skip = wr.elf_header_size() + wr.shentsize() * shnum + wr.phentsize() * phnum;
 
         // Skip over the headers
@@ -179,23 +183,28 @@ impl<'a> State<'a> {
         self.emit_alloc_sections(&mut wr, AllocSectionsKind::RWX);
 
         // Emit symbol table. This has to be done after emitting sections, so that we know the offsets.
-        let symtab_off = wr.tell();
-        for sym in &self.syms {
-            wr.write_sym(sym);
+        // Also, we only emit symbols if there actually are some (excluding the null symbol)
+        if self.syms.len() > 1 {
+            let symtab_off = wr.tell();
+            for sym in &self.syms {
+                wr.write_sym(sym);
+            }
+            let symtab_size = wr.tell() - symtab_off;
+            self.shdrs.push(SectionHeader {
+                name: self.strtab.offsetof(c".symtab"),
+                typ: SectionType::ShtSymtab,
+                flags: Shf::empty(),
+                addr: 0,
+                offset: symtab_off as usize,
+                size: symtab_size as usize,
+                link: 1, // The index of the string table
+                info: 0,
+                align: 1,
+                entry_size: wr.symsize() as u64,
+            });
+
+            shnum += 1;
         }
-        let symtab_size = wr.tell() - symtab_off;
-        self.shdrs.push(SectionHeader {
-            name: self.strtab.offsetof(c".symtab"),
-            typ: SectionType::ShtSymtab,
-            flags: Shf::empty(),
-            addr: 0,
-            offset: symtab_off as usize,
-            size: symtab_size as usize,
-            link: 1, // The index of the string table
-            info: 0,
-            align: 1,
-            entry_size: wr.symsize() as u64,
-        });
 
         // Go back to the beginning of the file, and emit the headers
         wr.rewind();

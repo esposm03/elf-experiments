@@ -201,6 +201,7 @@ impl Writer {
     }
 
     pub fn align(&mut self, align: u64) -> usize {
+        let align = align.max(1);
         let aligned = self.tell() + (align - 1) & !(align - 1);
         let padding = aligned - self.tell();
         for _ in 0..padding {
@@ -209,21 +210,21 @@ impl Writer {
         padding as usize
     }
 
-    pub fn elf_header_size(&mut self) -> usize {
+    pub fn elf_header_size(&self) -> usize {
         match self.class {
             Class32 => 52,
             Class64 => 64,
         }
     }
 
-    pub fn shentsize(&mut self) -> usize {
+    pub fn shentsize(&self) -> usize {
         match self.class {
             Class32 => 40,
             Class64 => 64,
         }
     }
 
-    pub fn phentsize(&mut self) -> usize {
+    pub fn phentsize(&self) -> usize {
         match self.class {
             Class32 => 32,
             Class64 => 56,
