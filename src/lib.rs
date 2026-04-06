@@ -57,6 +57,7 @@ pub struct State<'a> {
     progbits_rw: IndexMap<OutputSection<'a>, Vec<InputSection<'a>>>,
     progbits_rx: IndexMap<OutputSection<'a>, Vec<InputSection<'a>>>,
     progbits_rwx: IndexMap<OutputSection<'a>, Vec<InputSection<'a>>>,
+    has_syms: bool,
 
     phdrs: Vec<SegmentHeader>,
     shdrs: Vec<SectionHeader>,
@@ -75,6 +76,7 @@ impl<'a> State<'a> {
             progbits_rw: IndexMap::new(),
             progbits_rx: IndexMap::new(),
             progbits_rwx: IndexMap::new(),
+            has_syms: false,
 
             phdrs: vec![],
             shdrs: vec![],
@@ -126,6 +128,9 @@ impl<'a> State<'a> {
                 _ => {
                     // Process symbols of this section
                     let syms = process_input_symbols(&mut self.strtab, file, &obj, sndx);
+                    if !syms.is_empty() {
+                        self.has_syms = true;
+                    }
 
                     let out_sect = OutputSection { name, typ, flags };
                     let data = InputSection {
@@ -164,12 +169,13 @@ impl<'a> State<'a> {
             + count_ph(&self.progbits_rw)
             + count_ph(&self.progbits_rx)
             + count_ph(&self.progbits_rdonly);
-        let mut shnum = self.progbits_rwx.len()
+        let shnum = self.progbits_rwx.len()
             + self.progbits_rx.len()
             + self.progbits_rw.len()
             + self.progbits_rdonly.len()
             + self.progbits_noalloc.len()
-            + 2; // there are also a null section and a strtab
+            + 2 // there are also a null section and a strtab
+            + if self.has_syms { 1 } else { 0 };
         let initial_skip = wr.elf_header_size() + wr.shentsize() * shnum + wr.phentsize() * phnum;
 
         // Skip over the headers
@@ -202,8 +208,6 @@ impl<'a> State<'a> {
                 align: 1,
                 entry_size: wr.symsize() as u64,
             });
-
-            shnum += 1;
         }
 
         // Go back to the beginning of the file, and emit the headers

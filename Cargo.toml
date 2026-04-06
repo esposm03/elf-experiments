@@ -9,3 +9,13 @@ indexmap = "2.13.0"
 nom = "8.0.0"
 num-derive = "0.4.2"
 num-traits = "0.2.19"
+
+[dev-dependencies]
+insta = { version = "1.47.2", features = ["yaml"] }
+tempfile = "3.27.0"
+serde = { version = "1.0.228", features = ["derive"] }
+bitflags = { version = "2.11.0", features = ["serde"] }
+
+[profile.dev.package]
+insta.opt-level = 3
+similar.opt-level = 3

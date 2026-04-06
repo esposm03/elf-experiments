@@ -1,0 +1,92 @@
+---
+source: tests/basics.rs
+expression: "link([\"tests/static.s\"])"
+---
+header:
+  class: Class64
+  endianness: EndianLittle
+  os_abi: 0
+  abi_version: 0
+  typ: Executable
+  machine: 62
+  entry: 4194304
+  phoff: 64
+  shoff: 120
+  flags: 0
+  header_size: 64
+  phentsize: 56
+  phnum: 1
+  shentsize: 64
+  shnum: 4
+  shstrndx: 1
+sections:
+  - name: ""
+    typ: ShtNull
+    flags: ""
+    addr: 0
+    offset: 0
+    size: 0
+    link: 0
+    info: 0
+    align: 0
+    entry_size: 0
+    data: ""
+  - name: ".strtab"
+    typ: ShtStrtab
+    flags: ""
+    addr: 0
+    offset: 376
+    size: 30
+    link: 0
+    info: 0
+    align: 0
+    entry_size: 0
+    data: "\\x00.strtab\\x00.text\\x00_start\\x00.symtab\\x00"
+  - name: ".text"
+    typ: ShtProgbits
+    flags: Alloc | ExecInstr
+    addr: 4194304
+    offset: 4096
+    size: 16
+    link: 0
+    info: 0
+    align: 4
+    entry_size: 0
+    data: "H\\xc7\\xc7*\\x00\\x00\\x00H\\xc7\\xc0<\\x00\\x00\\x00\\x0f\\x05"
+  - name: ".symtab"
+    typ: ShtSymtab
+    flags: ""
+    addr: 0
+    offset: 4112
+    size: 48
+    link: 1
+    info: 0
+    align: 1
+    entry_size: 24
+    data: "\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x0f\\x00\\x00\\x00\\x10\\x00\\x01\\x00\\x00\\x00@\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+segments:
+  - segment_type: Load
+    flags: Read | Exec
+    offset: 4096
+    virtual_addr: 4194304
+    physical_addr: 0
+    file_size: 16
+    mem_size: 16
+    align: 4096
+    data: "H\\xc7\\xc7*\\x00\\x00\\x00H\\xc7\\xc0<\\x00\\x00\\x00\\x0f\\x05"
+syms:
+  - name: 0
+    bind: Local
+    typ: NoType
+    other: 0
+    shndx: 0
+    value: 0
+    size: 0
+  - name: 15
+    bind: Global
+    typ: NoType
+    other: 0
+    shndx: 1
+    value: 4194304
+    size: 0
+symtab_strtab: 1

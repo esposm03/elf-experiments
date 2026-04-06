@@ -1,236 +1,434 @@
-use std::ffi::CStr;
+use std::{io::Read, process::Command};
 
-use elf_experiments::{
-    State,
-    elf::{
-        ElfClass, ElfEndian, ElfFile, ElfHeader, ElfType, SectionFlags, SectionHeader, SectionType,
-    },
-    interner::Interner,
-    parser,
-    writer::Writer,
-};
+use elf_experiments::{State, parser};
+use insta::assert_yaml_snapshot;
+use tempfile::NamedTempFile;
 
-struct PendingSection {
-    name: &'static CStr,
-    flags: SectionFlags,
-    size: usize,
-    align: u64,
+fn compile(src_path: &str) -> Vec<u8> {
+    let mut obj_file = NamedTempFile::with_suffix(".o").unwrap();
 
-    offset: u64,
+    let status = Command::new("clang")
+        .args(["-target", "x86_64-unknown-linux-gnu", "-c"])
+        .arg(src_path)
+        .arg("-o")
+        .arg(obj_file.path())
+        .status()
+        .unwrap();
+    assert!(status.success(), "Compilation failed");
+
+    let mut obj = vec![];
+    obj_file.read_to_end(&mut obj).unwrap();
+    obj
 }
 
-pub struct ElfBuilder {
-    sections: Vec<PendingSection>,
-    wr: Writer,
-    shstrtab: Interner<'static>,
-    path: &'static str,
-}
+fn link<I: IntoIterator<Item = &'static str>>(paths: I) -> testtypes::TestElfFile {
+    let mut state = State::new();
+    state.override_entry(0);
 
-impl ElfBuilder {
-    pub fn new(path: &'static str) -> Self {
-        let mut wr = Writer::new(ElfClass::Class64, ElfEndian::EndianLittle);
-        wr.seek(wr.elf_header_size() as _);
-
-        let mut shstrtab = Interner::default();
-        shstrtab.insert(c".strtab");
-        Self {
-            sections: vec![],
-            shstrtab: shstrtab,
-            wr,
-            path,
-        }
+    let files: Vec<_> = paths.into_iter().map(|p| (p, compile(p))).collect();
+    for (path, data) in &files {
+        state.process_input_file(path, data);
     }
 
-    pub fn progbits(mut self, name: &'static CStr, flags: &str, size: usize, align: u64) -> Self {
-        assert!(!name.is_empty(), "section name must not be empty");
-        self.shstrtab.insert(name);
-
-        assert!(
-            align == 0 || align.is_power_of_two(),
-            "alignment must be a power of two or zero"
-        );
-        self.wr.align(align);
-
-        self.sections.push(PendingSection {
-            flags: parse_section_flags(flags),
-            name,
-            size,
-            align,
-            offset: self.wr.tell(),
-        });
-
-        assert!(self.sections.len() < 10);
-        let ch = self.sections.len() as u8 + 0x40;
-        for _ in 0..size {
-            self.wr.write_bytes(&[ch]);
-        }
-
-        self
-    }
-
-    pub fn finish(mut self) -> Vec<u8> {
-        let shstrtab_start = self.wr.tell() as usize;
-        self.wr.write_bytes(self.shstrtab.bytes());
-        let shstrtab_len = self.wr.tell() as usize - shstrtab_start;
-
-        let sections_start = self.wr.tell();
-        self.wr.write_null_section();
-        self.wr.write_shdr(&SectionHeader {
-            name: self.shstrtab.offsetof(c".strtab"),
-            typ: SectionType::ShtStrtab,
-            flags: SectionFlags::empty(),
-            addr: 0,
-            offset: shstrtab_start,
-            size: shstrtab_len,
-            link: 0,
-            info: 0,
-            align: 0,
-            entry_size: 0,
-        });
-
-        for sec in &self.sections {
-            self.wr.write_shdr(&SectionHeader {
-                name: self.shstrtab.offsetof(sec.name),
-                typ: SectionType::ShtProgbits,
-                flags: sec.flags,
-                addr: 0,
-                offset: sec.offset as usize,
-                size: sec.size,
-                link: 0,
-                info: 0,
-                align: sec.align,
-                entry_size: 0,
-            });
-        }
-
-        let shnum = self.sections.len() + 2;
-        let elf_header_size = self.wr.elf_header_size();
-        let phentsize = self.wr.phentsize();
-        let shentsize = self.wr.shentsize();
-
-        self.wr.rewind();
-        self.wr.write_ehdr(ElfHeader {
-            class: ElfClass::Class64,
-            endianness: ElfEndian::EndianLittle,
-            os_abi: 0,
-            abi_version: 0,
-            typ: ElfType::Relocatable,
-            machine: 0,
-            entry: 0,
-            phoff: 0,
-            shoff: sections_start as usize,
-            flags: 0,
-            header_size: elf_header_size as u16,
-            phentsize: phentsize as u16,
-            phnum: 0,
-            shentsize: shentsize as u16,
-            shnum: shnum as u16,
-            shstrndx: 1,
-        });
-
-        self.wr.into_inner()
-    }
-
-    pub fn link(self) -> Vec<u8> {
-        let mut state = State::new();
-        state.override_entry(0);
-
-        let path = self.path;
-        let finish = self.finish();
-        state.process_input_file(path, &finish);
-
-        state.emit()
-    }
-}
-
-fn parse_section_flags(flags: &str) -> SectionFlags {
-    let mut parsed = SectionFlags::empty();
-
-    for flag in flags.chars() {
-        match flag {
-            'A' | 'a' => parsed |= SectionFlags::Alloc,
-            'W' | 'w' => parsed |= SectionFlags::Write,
-            'X' | 'x' => parsed |= SectionFlags::ExecInstr,
-            _ => panic!("unknown section flag: {flag}"),
-        }
-    }
-
-    parsed
-}
-
-fn assert_null_section(elf: &ElfFile) {
-    assert_eq!(
-        elf.sections[0],
-        SectionHeader {
-            name: 0,
-            typ: SectionType::ShtNull,
-            flags: SectionFlags::empty(),
-            addr: 0,
-            offset: 0,
-            size: 0,
-            link: 0,
-            info: 0,
-            align: 0,
-            entry_size: 0,
-        }
-    )
-}
-
-fn assert_strtab(elf: &ElfFile, strings: &[u8]) {
-    let shdr = &elf.sections[1];
-    let data = &elf.data[shdr.offset..][..shdr.size];
-
-    assert_eq!(shdr.typ, SectionType::ShtStrtab);
-    assert_eq!(shdr.flags, SectionFlags::empty());
-    assert_eq!(data, strings);
-}
-
-#[track_caller]
-fn assert_data(elf: &ElfFile, section: usize, data: &[u8]) {
-    let shdr = &elf.sections[section];
-    assert_eq!(&elf.data[shdr.offset..][..shdr.size], data);
-}
-
-#[track_caller]
-fn assert_name(elf: &ElfFile, section: usize, name: &CStr) {
-    let shdr = &elf.sections[section];
-    let strtab = &elf.data[elf.sections[1].offset..];
-    let namestr = CStr::from_bytes_until_nul(&strtab[shdr.name..]).unwrap();
-    assert_eq!(namestr, name);
+    let data = state.emit().leak();
+    parser::elf(data).into()
 }
 
 #[test]
-fn basics() {
-    let data = ElfBuilder::new("input.o")
-        .progbits(c".text", "AX", 16, 16)
-        .progbits(c".data", "AW", 8, 8)
-        .link();
-    let elf = parser::elf(&data);
+fn snapshot() {
+    assert_yaml_snapshot!(link(["tests/static.s"]));
+}
 
-    assert_eq!(elf.header.typ, ElfType::Executable);
-    assert_eq!(elf.sections.len(), 4);
-    assert_eq!(elf.header.shnum, elf.sections.len() as u16);
-    assert_eq!(elf.segments.len(), 2);
-    assert_eq!(elf.header.phnum, elf.segments.len() as u16);
+mod testtypes {
+    use std::ffi::CStr;
 
-    assert_null_section(&elf);
-    assert_strtab(&elf, b"\0.strtab\0.text\0.data\0");
+    use elf_experiments::elf;
+    use num_derive::FromPrimitive;
+    use num_traits::FromPrimitive;
 
-    assert_eq!(elf.sections[2].typ, SectionType::ShtProgbits);
-    assert_name(&elf, 2, c".data");
-    assert_data(&elf, 2, b"BBBBBBBB");
-    assert_eq!(elf.sections[2].align % 8, 0);
-    assert_eq!(elf.sections[2].addr, 0x400000);
+    pub struct Bytestring(&'static [u8]);
 
-    assert_eq!(elf.sections[3].typ, SectionType::ShtProgbits);
-    assert_name(&elf, 3, c".text");
-    assert_data(&elf, 3, b"AAAAAAAAAAAAAAAA");
-    assert_eq!(elf.sections[3].addr, 0x401000);
+    impl serde::Serialize for Bytestring {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let escaped: Vec<u8> = self.0.escape_ascii().collect();
+            let str = String::from_utf8_lossy(&escaped);
+            serializer.serialize_str(&str)
+        }
+    }
 
-    assert_eq!(elf.segments[0].virtual_addr, 0x400000);
-    assert_eq!(elf.segments[0].offset, elf.sections[2].offset as u64);
-    assert_eq!(elf.segments[0].mem_size, elf.sections[2].size as u64);
-    assert_eq!(elf.segments[1].virtual_addr, 0x401000);
-    assert_eq!(elf.segments[1].offset, elf.sections[3].offset as u64);
-    assert_eq!(elf.segments[1].mem_size, elf.sections[3].size as u64);
+    #[derive(serde::Serialize)]
+    pub enum TestElfClass {
+        Class32 = 1,
+        Class64 = 2,
+    }
+
+    impl From<elf::ElfClass> for TestElfClass {
+        fn from(value: elf::ElfClass) -> Self {
+            match value {
+                elf::ElfClass::Class32 => Self::Class32,
+                elf::ElfClass::Class64 => Self::Class64,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    pub enum TestElfEndian {
+        EndianLittle = 1,
+        EndianBig = 2,
+    }
+
+    impl From<elf::ElfEndian> for TestElfEndian {
+        fn from(value: elf::ElfEndian) -> Self {
+            match value {
+                elf::ElfEndian::EndianLittle => Self::EndianLittle,
+                elf::ElfEndian::EndianBig => Self::EndianBig,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    pub enum TestElfType {
+        Relocatable = 1, // ET_REL
+        Executable = 2,  // ET_EXEC
+        Shared = 3,      // ET_DYN
+        Core = 4,        // ET_CORE
+    }
+
+    impl From<elf::ElfType> for TestElfType {
+        fn from(value: elf::ElfType) -> Self {
+            match value {
+                elf::ElfType::Relocatable => Self::Relocatable,
+                elf::ElfType::Executable => Self::Executable,
+                elf::ElfType::Shared => Self::Shared,
+                elf::ElfType::Core => Self::Core,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    pub struct TestElfHeader {
+        pub class: TestElfClass,
+        pub endianness: TestElfEndian,
+        pub os_abi: u8,
+        pub abi_version: u8,
+        pub typ: TestElfType,
+        pub machine: u16,
+        pub entry: usize,
+        pub phoff: usize,
+        pub shoff: usize,
+        pub flags: u32,
+        pub header_size: u16,
+        pub phentsize: u16,
+        pub phnum: u16,
+        pub shentsize: u16,
+        pub shnum: u16,
+        pub shstrndx: u16,
+    }
+
+    impl From<&elf::ElfHeader> for TestElfHeader {
+        fn from(value: &elf::ElfHeader) -> Self {
+            Self {
+                class: value.class.into(),
+                endianness: value.endianness.into(),
+                os_abi: value.os_abi,
+                abi_version: value.abi_version,
+                typ: value.typ.into(),
+                machine: value.machine,
+                entry: value.entry,
+                phoff: value.phoff,
+                shoff: value.shoff,
+                flags: value.flags,
+                header_size: value.header_size,
+                phentsize: value.phentsize,
+                phnum: value.phnum,
+                shentsize: value.shentsize,
+                shnum: value.shnum,
+                shstrndx: value.shstrndx,
+            }
+        }
+    }
+
+    bitflags::bitflags! {
+        #[derive(serde::Serialize)]
+        pub struct TestSectionFlags: u32 {
+            const Write	           = 1 << 0;	/* Writable */
+            const Alloc	           = 1 << 1;	/* Occupies memory during execution */
+            const ExecInstr	       = 1 << 2;	/* Executable */
+            const SHF_MERGE	           = 1 << 4;	/* Might be merged */
+            const SHF_STRINGS	       = 1 << 5;	/* Contains nul-terminated strings */
+            const SHF_INFO_LINK	       = 1 << 6;	/* `sh_info' contains SHT index */
+            const SHF_LINK_ORDER	   = 1 << 7;	/* Preserve order after combining */
+            const SHF_OS_NONCONFORMING = 1 << 8;	/* Non-standard OS specific handling */
+        }
+    }
+
+    impl From<elf::SectionFlags> for TestSectionFlags {
+        fn from(value: elf::SectionFlags) -> Self {
+            // Both are bitflags over `u32`; preserve raw bits.
+            Self::from_bits(value.bits()).unwrap()
+        }
+    }
+
+    #[derive(serde::Serialize, FromPrimitive)]
+    pub enum TestSectionType {
+        ShtNull = 0,                   /* Section header table entry unused */
+        ShtProgbits = 1,               /* Program data */
+        ShtSymtab = 2,                 /* Symbol table */
+        ShtStrtab = 3,                 /* String table */
+        ShtRela = 4,                   /* Relocation entries with addends */
+        ShtHash = 5,                   /* Symbol hash table */
+        ShtDynamic = 6,                /* Dynamic linking information */
+        ShtNote = 7,                   /* Notes */
+        ShtNobits = 8,                 /* Program space with no data (bss) */
+        ShtRel = 9,                    /* Relocation entries, no addends */
+        ShtShlib = 10,                 /* Reserved */
+        ShtDynsym = 11,                /* Dynamic linker symbol table */
+        ShtInitArray = 14,             /* Array of constructors */
+        ShtFiniArray = 15,             /* Array of destructors */
+        ShtPreinitArray = 16,          /* Array of pre-constructors */
+        ShtGroup = 17,                 /* Section group */
+        ShtSymtabShndx = 18,           /* Extended section indices */
+        ShtRelr = 19,                  /* RELR relative relocations */
+        ShtNum = 20,                   /* Number of defined types.  */
+        ShtLoos = 0x60000000,          /* Start OS-specific.  */
+        LlvmAddrSig = 0x6fff4c03,      /* LLVM Address Signatures */
+        ShtGnuAttributes = 0x6ffffff5, /* Object attributes.  */
+        ShtGnuHash = 0x6ffffff6,       /* GNU-style hash table.  */
+        ShtGnuLiblist = 0x6ffffff7,    /* Prelink library list */
+        ShtChecksum = 0x6ffffff8,      /* Checksum for DSO content.  */
+        ShtSunwMove = 0x6ffffffa,
+        ShtSunwComdat = 0x6ffffffb,
+        ShtSunwSyminfo = 0x6ffffffc,
+        ShtGnuVerdef = 0x6ffffffd,  /* Version definition section.  */
+        ShtGnuVerneed = 0x6ffffffe, /* Version needs section.  */
+        ShtGnuVersym = 0x6fffffff,  /* Version symbol table.  */
+        X8664Unwind = 0x70000001,
+    }
+
+    impl From<elf::SectionType> for TestSectionType {
+        fn from(value: elf::SectionType) -> Self {
+            let raw = value as u32;
+            TestSectionType::from_u32(raw).unwrap_or_else(|| {
+                panic!("unsupported/unknown SectionType value: {raw:#x}");
+            })
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    struct TestSection {
+        pub name: Bytestring,
+        pub typ: TestSectionType,
+        pub flags: TestSectionFlags,
+        pub addr: u64,
+        pub offset: usize,
+        pub size: usize,
+        pub link: u32,
+        pub info: u32,
+        pub align: u64,
+        pub entry_size: u64,
+        pub data: Bytestring,
+    }
+
+    impl<'a> From<(&'a elf::ElfFile<'static>, &'a elf::SectionHeader)> for TestSection {
+        fn from((elf, shdr): (&'a elf::ElfFile<'static>, &'a elf::SectionHeader)) -> Self {
+            let data = &elf.data[shdr.offset..][..shdr.size];
+            let strtab = &elf.sections[elf.header.shstrndx as usize];
+            let strtab = &elf.data[strtab.offset..][..strtab.size][shdr.name..];
+            Self {
+                name: Bytestring(CStr::from_bytes_until_nul(strtab).unwrap().to_bytes()),
+                typ: shdr.typ.into(),
+                flags: shdr.flags.into(),
+                addr: shdr.addr,
+                offset: shdr.offset,
+                size: shdr.size,
+                link: shdr.link,
+                info: shdr.info,
+                align: shdr.align,
+                entry_size: shdr.entry_size,
+                data: Bytestring(data),
+            }
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    pub struct TestSegmentHeader {
+        pub segment_type: TestSegmentType,
+        pub flags: TestSegmentFlags,
+        pub offset: u64,
+        pub virtual_addr: u64,
+        pub physical_addr: u64,
+        pub file_size: u64,
+        pub mem_size: u64,
+        pub align: u64,
+        pub data: Bytestring,
+    }
+
+    #[derive(serde::Serialize, FromPrimitive)]
+    pub enum TestSegmentType {
+        Null = 0,                 /* Program header table entry unused */
+        Load = 1,                 /* Loadable program segment */
+        Dynamic = 2,              /* Dynamic linking information */
+        Interp = 3,               /* Program interpreter */
+        Note = 4,                 /* Auxiliary information */
+        Shlib = 5,                /* Reserved */
+        Phdr = 6,                 /* Entry for header table itself */
+        Tls = 7,                  /* Thread-local storage segment */
+        Num = 8,                  /* Number of defined types */
+        GnuEhFrame = 0x6474e550,  /* GCC .eh_frame_hdr segment */
+        GnuStack = 0x6474e551,    /* Indicates stack executability */
+        GnuRelro = 0x6474e552,    /* Read-only after relocation */
+        GnuProperty = 0x6474e553, /* GNU property */
+        GnuSframe = 0x6474e554,   /* SFrame segment.  */
+        SunwBss = 0x6ffffffa,     /* Sun Specific segment */
+        SunWstack = 0x6ffffffb,   /* Stack segment */
+    }
+
+    bitflags::bitflags! {
+        #[derive(serde::Serialize)]
+        pub struct TestSegmentFlags: u32 {
+            const Read             = 1 << 2;
+            const Write            = 1 << 1;
+            const Exec             = 1 << 0;
+        }
+    }
+
+    impl From<elf::SegmentFlags> for TestSegmentFlags {
+        fn from(value: elf::SegmentFlags) -> Self {
+            Self::from_bits(value.bits()).unwrap()
+        }
+    }
+
+    impl From<elf::SegmentType> for TestSegmentType {
+        fn from(value: elf::SegmentType) -> Self {
+            let raw = value as u32;
+            TestSegmentType::from_u32(raw).unwrap_or_else(|| {
+                panic!("unsupported/unknown SegmentType value: {raw:#x}");
+            })
+        }
+    }
+
+    impl From<(&elf::ElfFile<'static>, &elf::SegmentHeader)> for TestSegmentHeader {
+        fn from((elf, value): (&elf::ElfFile<'static>, &elf::SegmentHeader)) -> Self {
+            let start = value.offset as usize;
+            let end = start + (value.file_size as usize);
+            let data = &elf.data[start..end];
+
+            Self {
+                segment_type: value.segment_type.into(),
+                flags: value.flags.into(),
+                offset: value.offset,
+                virtual_addr: value.virtual_addr,
+                physical_addr: value.physical_addr,
+                file_size: value.file_size,
+                mem_size: value.mem_size,
+                align: value.align,
+                data: Bytestring(data),
+            }
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    pub enum TestSymBind {
+        Local = 0,
+        Global = 1,
+        Weak = 2,
+    }
+
+    impl From<elf::SymBind> for TestSymBind {
+        fn from(value: elf::SymBind) -> Self {
+            match value {
+                elf::SymBind::Local => Self::Local,
+                elf::SymBind::Global => Self::Global,
+                elf::SymBind::Weak => Self::Weak,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    pub enum TestSymType {
+        NoType = 0,
+        Object = 1,
+        Func = 2,
+        Section = 3,
+        File = 4,
+        Common = 5,
+        Tls = 6,
+    }
+
+    impl From<elf::SymType> for TestSymType {
+        fn from(value: elf::SymType) -> Self {
+            match value {
+                elf::SymType::NoType => Self::NoType,
+                elf::SymType::Object => Self::Object,
+                elf::SymType::Func => Self::Func,
+                elf::SymType::Section => Self::Section,
+                elf::SymType::File => Self::File,
+                elf::SymType::Common => Self::Common,
+                elf::SymType::Tls => Self::Tls,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    pub struct TestSym {
+        pub name: u32,
+        pub bind: TestSymBind,
+        pub typ: TestSymType,
+        pub other: u8,
+        pub shndx: u16,
+        pub value: usize,
+        pub size: usize,
+    }
+
+    impl From<&elf::Sym> for TestSym {
+        fn from(value: &elf::Sym) -> Self {
+            Self {
+                name: value.name,
+                bind: value.bind.into(),
+                typ: value.typ.into(),
+                other: value.other,
+                shndx: value.shndx,
+                value: value.value,
+                size: value.size,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    pub struct TestElfFile {
+        header: TestElfHeader,
+        sections: Vec<TestSection>,
+        segments: Vec<TestSegmentHeader>,
+        syms: Vec<TestSym>,
+        /// The index of the strtab to be used for looking up symbol names.
+        symtab_strtab: usize,
+    }
+
+    impl From<elf::ElfFile<'static>> for TestElfFile {
+        fn from(parsed: elf::ElfFile<'static>) -> Self {
+            let header = TestElfHeader::from(&parsed.header);
+
+            let sections = parsed
+                .sections
+                .iter()
+                .map(|shdr| TestSection::from((&parsed, shdr)))
+                .collect();
+
+            let segments = parsed
+                .segments
+                .iter()
+                .map(|phdr| TestSegmentHeader::from((&parsed, phdr)))
+                .collect();
+
+            let syms = parsed.syms.iter().map(TestSym::from).collect();
+
+            TestElfFile {
+                header,
+                sections,
+                segments,
+                syms,
+                symtab_strtab: parsed.symtab_strtab,
+            }
+        }
+    }
 }
